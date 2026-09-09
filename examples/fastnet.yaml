@@ -1,8 +1,9 @@
 expedition:
   id: fastnet-2023
   name: Fastnet 2023
-  vessel: Oliver Heer Ocean Racing
-  instrument: SubCtech OceanPack Race / LI-850
+  race_name: Fastnet
+  # Vessel and instrument identity come from project.yaml; add keys here only
+  # to override them for this expedition.
 inputs:
   logs: ../data/2306_fastnet/*.log
   timezone: UTC

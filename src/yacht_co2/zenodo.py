@@ -28,13 +28,34 @@ from dotenv import load_dotenv
 from loguru import logger
 
 from .errors import ZenodoError
+from .project import PROJECT_CONFIG_NAME, config_directories, deep_merge, read_yaml
 
 CONFIG_NAME = "zenodo.yaml"
-DEFAULTS_NAME = ".env.zenodo"
+# Shared metadata lives beside the platform defaults, in one project file with
+# a block per consumer, so vessel identity is declared once for the whole
+# repository.
+DEFAULTS_NAME = PROJECT_CONFIG_NAME
+DEFAULTS_BLOCK = "zenodo"
+# The vessel names one boat for both consumers, so it is declared once here and
+# inherited into ``title_template``.
+PLATFORM_BLOCK = "platform"
+# Both superseded standalone names keep working, as whole mappings, so projects
+# that have not merged their configuration do not break. The first was named
+# after dotenv even though it has always been YAML.
+LEGACY_DEFAULTS_NAMES = (".env.zenodo", "zenodo_project.yaml")
 STATE_NAME = ".zenodo-upload.json"
 PRODUCTION_URL = "https://zenodo.org"
 SANDBOX_URL = "https://sandbox.zenodo.org"
 NOTES_DESCRIPTION_TYPE = "other"
+COLLECTED_DATE_TYPE = "collected"
+DEFAULT_TITLE_TEMPLATE = (
+    "Surface ocean CO2 measurements on board {vessel} during the {campaign} ({campaign_date})"
+)
+# Zenodo renders an unrecognised identifier scheme as a plain alternate
+# identifier, which is exactly what an internal slug should be.
+SLUG_SCHEME = "other"
+_TITLE_TOKEN_RE = re.compile(r"{(\w+)}")
+_CAMPAIGN_DATE_RE = re.compile(r"\d{4}(?:-\d{2}(?:-\d{2})?)?")
 # Without this header Zenodo answers the records API with its *legacy* deposit
 # serialization, which reports the DOI as a flat ``doi`` field and omits
 # ``pids``, ``access``, and ``is_published`` entirely.
@@ -43,17 +64,6 @@ RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 PROGRESS_STEP = 0.25
 PROGRESS_MIN_BYTES = 8 * 1024 * 1024
 _ORCID_RE = re.compile(r"^(?:https?://orcid\.org/)?(\d{4}-\d{4}-\d{4}-[\dX]{4})$", re.I)
-
-
-def _deep_merge(base: Mapping[str, Any], update: Mapping[str, Any]) -> dict[str, Any]:
-    """Return a recursively merged copy; lists and scalar values are replaced."""
-    result = dict(base)
-    for key, value in update.items():
-        if isinstance(value, Mapping) and isinstance(result.get(key), Mapping):
-            result[key] = _deep_merge(result[key], value)
-        else:
-            result[key] = value
-    return result
 
 
 def _add_months(value: date, months: int) -> date:
@@ -131,41 +141,148 @@ def parse_creators(entries: Sequence[str]) -> list[dict[str, Any]]:
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
-    try:
-        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
-        raise ZenodoError(f"could not read {path}: {exc}") from exc
-    if not isinstance(loaded, dict):
-        raise ZenodoError(f"configuration root must be a mapping: {path}")
-    return loaded
+    return read_yaml(path, error=ZenodoError)
+
+
+def _defaults_directories(folder: Path, config_path: Path) -> list[Path]:
+    """List directories to search for defaults, lowest precedence first.
+
+    ``config_directories`` climbs from the data folder to the project root, so
+    one ``project.yaml`` beside ``data/`` serves every folder beneath it
+    whatever the working directory — the same resolution the ``platform``
+    defaults use. The invocation and configuration directories rank
+    below that walk, so a folder's own defaults always win.
+    """
+    return [Path.cwd(), config_path.parent, *config_directories(folder)]
 
 
 def _defaults(folder: Path, config_path: Path) -> dict[str, Any]:
-    """Read shared defaults from the nearest ``.env.zenodo``.
+    """Merge every project defaults file that applies to ``folder``.
 
-    The file is YAML despite its name. Every copy found is merged, from the
-    invocation directory through to the data folder, so a folder can override
-    single keys without restating the whole file.
+    Each file supplies the shared metadata — creators, community, licence,
+    vessel, title template — so a folder's own ``zenodo.yaml`` only has to
+    carry what is specific to it. Defaults live in the ``zenodo`` block of
+    ``project.yaml``; the superseded standalone files are still read, as whole
+    mappings, and rank below it in the same directory.
     """
-    candidates = list(
-        dict.fromkeys(
-            [
-                Path.cwd() / DEFAULTS_NAME,
-                config_path.parent / DEFAULTS_NAME,
-                folder / DEFAULTS_NAME,
-            ]
-        )
-    )
+    directories = _defaults_directories(folder, config_path)
     resolved: dict[str, Any] = {}
     found = False
-    for candidate in candidates:
+    for directory in directories:
+        for name in LEGACY_DEFAULTS_NAMES:
+            candidate = directory / name
+            if candidate.is_file():
+                resolved = deep_merge(resolved, _read_yaml(candidate))
+                found = True
+        candidate = directory / DEFAULTS_NAME
         if candidate.is_file():
-            resolved = _deep_merge(resolved, _read_yaml(candidate))
-            found = True
+            document = _read_yaml(candidate)
+            resolved = deep_merge(resolved, _zenodo_block(document, candidate))
+            found = found or DEFAULTS_BLOCK in document
     if not found:
-        searched = ", ".join(str(candidate.parent) for candidate in candidates)
-        raise ZenodoError(f"no {DEFAULTS_NAME} defaults found; looked in {searched}")
+        searched = ", ".join(str(directory) for directory in dict.fromkeys(directories))
+        raise ZenodoError(
+            f"no {DEFAULTS_BLOCK!r} block in any {DEFAULTS_NAME}; looked in {searched}"
+        )
     return resolved
+
+
+def _zenodo_block(document: Mapping[str, Any], path: Path) -> dict[str, Any]:
+    """Extract the ``zenodo`` block, inheriting the vessel from ``platform``.
+
+    The vessel names the same boat in both blocks, so it is declared once under
+    ``platform`` and reused for ``title_template``. An explicit ``zenodo:
+    vessel`` still wins, for the case where the archived name differs from the
+    reported one.
+    """
+    value = document.get(DEFAULTS_BLOCK, {})
+    if not isinstance(value, Mapping):
+        raise ZenodoError(f"{DEFAULTS_BLOCK} must be a mapping: {path}")
+    block = dict(value)
+    platform = document.get(PLATFORM_BLOCK, {})
+    if not isinstance(platform, Mapping):
+        raise ZenodoError(f"{PLATFORM_BLOCK} must be a mapping: {path}")
+    inherited = platform.get("vessel") or platform.get("vessel_name")
+    if inherited and not block.get("vessel"):
+        block["vessel"] = inherited
+    return block
+
+
+def _campaign_date(value: Any) -> str:
+    """Validate a campaign date, which may be a year, a month, or a full date.
+
+    All three are valid ISO-8601 (and EDTF) forms, so the value goes into the
+    title and the record's ``collected`` date exactly as written. The date is
+    always declared in configuration: nothing here reads the data files.
+    """
+    text = str(value or "").strip()
+    if not _CAMPAIGN_DATE_RE.fullmatch(text):
+        raise ZenodoError(f"invalid campaign_date {text!r}: expected YYYY-MM-DD, YYYY-MM, or YYYY")
+    if len(text) == 10:
+        try:
+            date.fromisoformat(text)
+        except ValueError as exc:
+            raise ZenodoError(f"invalid campaign_date {text!r}: {exc}") from exc
+    return text
+
+
+def _resolve_title(resolved: dict[str, Any]) -> str:
+    """Render the title from the campaign tokens, or take an explicit one.
+
+    A record is named one way or the other, never both: a title built from
+    ``campaign``/``campaign_date`` keeps every record in a project phrased
+    identically, and an explicit ``title`` is the escape hatch for one that
+    cannot be. Accepting both would leave two competing names for the record.
+    """
+    explicit = str(resolved.get("title") or "").strip()
+    campaign = str(resolved.get("campaign") or "").strip()
+    campaign_date = str(resolved.get("campaign_date") or "").strip()
+
+    if explicit and (campaign or campaign_date):
+        given = " and ".join(
+            key
+            for key, value in (("campaign", campaign), ("campaign_date", campaign_date))
+            if value
+        )
+        raise ZenodoError(
+            f"title cannot be combined with {given}: the title is generated from campaign "
+            f"and campaign_date, so remove either the title or {given} from {CONFIG_NAME}"
+        )
+    if explicit:
+        return explicit
+    missing = [
+        key
+        for key, value in (("campaign", campaign), ("campaign_date", campaign_date))
+        if not value
+    ]
+    if missing:
+        raise ZenodoError(
+            f"{' and '.join(missing)} required: set them in the folder's {CONFIG_NAME} "
+            f"(or pass --campaign/--campaign-date), or set an explicit title instead"
+        )
+
+    resolved["campaign_date"] = campaign_date = _campaign_date(campaign_date)
+    template = str(resolved.get("title_template") or DEFAULT_TITLE_TEMPLATE).strip()
+    tokens = {
+        "vessel": str(resolved.get("vessel") or "").strip(),
+        "campaign": campaign,
+        "campaign_date": campaign_date,
+        "slug": str(resolved.get("slug") or ""),
+        "year": campaign_date[:4],
+    }
+    unknown = sorted(set(_TITLE_TOKEN_RE.findall(template)) - set(tokens))
+    if unknown:
+        raise ZenodoError(
+            f"title_template refers to unknown field(s) {', '.join(unknown)}; "
+            f"available: {', '.join(sorted(tokens))}"
+        )
+    blank = sorted(name for name in set(_TITLE_TOKEN_RE.findall(template)) if not tokens[name])
+    if blank:
+        raise ZenodoError(
+            f"title_template needs {', '.join(blank)}; add it to {DEFAULTS_NAME} "
+            "alongside the other shared metadata"
+        )
+    return template.format(**tokens)
 
 
 def load_zenodo_config(
@@ -175,7 +292,7 @@ def load_zenodo_config(
     *,
     today: date | None = None,
 ) -> dict[str, Any]:
-    """Resolve ``.env.zenodo`` defaults, a folder/config YAML, then CLI overrides.
+    """Resolve ``project.yaml`` defaults, a folder YAML, then CLI overrides.
 
     Parameters
     ----------
@@ -194,10 +311,10 @@ def load_zenodo_config(
     if config_path.exists():
         if not config_path.is_file():
             raise ZenodoError(f"configuration is not a file: {config_path}")
-        resolved = _deep_merge(resolved, _read_yaml(config_path))
+        resolved = deep_merge(resolved, _read_yaml(config_path))
     if overrides:
         clean = {key: value for key, value in overrides.items() if value is not None}
-        resolved = _deep_merge(resolved, clean)
+        resolved = deep_merge(resolved, clean)
 
     current = today or date.today()
     publication = resolved.get("publication_date") or current.isoformat()
@@ -232,9 +349,11 @@ def load_zenodo_config(
         embargo["until"] = None
     resolved["embargo"] = embargo
 
-    if not str(resolved.get("title") or "").strip():
-        raise ZenodoError("title is required (pass --title when creating zenodo.yaml)")
-    resolved["title"] = str(resolved["title"]).strip()
+    resolved["slug"] = str(resolved.get("slug") or folder_path.name).strip()
+    if not resolved["slug"] or any(character.isspace() for character in resolved["slug"]):
+        raise ZenodoError(f"slug must be a non-empty string without spaces: {resolved['slug']!r}")
+    resolved["slug_scheme"] = str(resolved.get("slug_scheme") or SLUG_SCHEME).strip()
+    resolved["title"] = _resolve_title(resolved)
     if not str(resolved.get("community") or "").strip():
         raise ZenodoError("community is required")
     resolved["community"] = str(resolved["community"]).strip()
@@ -250,23 +369,36 @@ def load_zenodo_config(
 
 def generate_zenodo_config(
     folder: str | Path,
-    title: str,
+    title: str | None = None,
     *,
     overrides: Mapping[str, Any] | None = None,
     today: date | None = None,
 ) -> Path:
-    """Generate ``FOLDER/zenodo.yaml`` containing all resolved metadata."""
+    """Generate ``FOLDER/zenodo.yaml`` holding only that folder's own facts.
+
+    Everything shared — creators, community, licence, vessel, title template —
+    stays in ``project.yaml`` and is inherited, so the generated file
+    carries just the campaign (or an explicit title) and any option the caller
+    overrode. The full configuration is still resolved first, so a folder that
+    cannot produce a valid record fails before the file is written.
+    """
     folder_path = Path(folder).resolve()
     if not folder_path.is_dir():
         raise ZenodoError(f"folder does not exist or is not a directory: {folder_path}")
     destination = folder_path / CONFIG_NAME
     if destination.exists():
         raise ZenodoError(f"configuration already exists: {destination}")
-    supplied = dict(overrides or {})
-    supplied["title"] = title
+    supplied = {key: value for key, value in (overrides or {}).items() if value is not None}
+    if title is not None:
+        supplied["title"] = title
     resolved = load_zenodo_config(folder_path, overrides=supplied, today=today)
+    if resolved.get("campaign") and resolved.get("campaign_date"):
+        # The title is rendered from the campaign on every run; writing it out
+        # would make the folder declare both, which is rejected on the next run.
+        supplied.pop("title", None)
+        supplied["campaign_date"] = resolved["campaign_date"]
     destination.write_text(
-        yaml.safe_dump(resolved, sort_keys=False, allow_unicode=True), encoding="utf-8"
+        yaml.safe_dump(supplied, sort_keys=False, allow_unicode=True), encoding="utf-8"
     )
     return destination
 
@@ -354,6 +486,23 @@ def _metadata(config: Mapping[str, Any], markdown_files: Sequence[Path]) -> dict
         "languages": [{"id": config["language"]}],
         "subjects": [{"subject": keyword} for keyword in config.get("keywords", [])],
     }
+    # Zenodo mints record ids and DOIs itself, so the project's own slug is
+    # carried as an alternate identifier: the only stable join key between a
+    # published record, its data folder, and the manifest that processed it.
+    if config.get("slug"):
+        metadata["identifiers"] = [
+            {"scheme": config.get("slug_scheme") or SLUG_SCHEME, "identifier": config["slug"]}
+        ]
+    # An EDTF date makes the campaign period queryable instead of leaving it
+    # readable only inside the title.
+    if config.get("campaign_date"):
+        metadata["dates"] = [
+            {
+                "date": config["campaign_date"],
+                "type": {"id": COLLECTED_DATE_TYPE},
+                "description": "Campaign date",
+            }
+        ]
     if notes:
         metadata["additional_descriptions"] = [
             {"description": notes, "type": {"id": NOTES_DESCRIPTION_TYPE}}
@@ -862,6 +1011,8 @@ def upload_raw_folder(
     folder: str | Path,
     *,
     title: str | None = None,
+    campaign: str | None = None,
+    campaign_date: str | None = None,
     config: str | Path | None = None,
     community: str | None = None,
     publish: bool = False,
@@ -889,6 +1040,8 @@ def upload_raw_folder(
     config_path = Path(config).resolve() if config is not None else folder_path / CONFIG_NAME
     overrides: dict[str, Any] = {
         "title": title,
+        "campaign": campaign,
+        "campaign_date": campaign_date,
         "community": community,
         # ``--sandbox`` enables the sandbox; omitting it must not disable a
         # sandbox explicitly selected in an existing YAML file.
@@ -900,10 +1053,15 @@ def upload_raw_folder(
     if not config_path.exists():
         if config is not None:
             raise ZenodoError(f"configuration does not exist: {config_path}")
-        if not title:
-            raise ZenodoError("no zenodo.yaml found; --title is required")
+        if not title and not (campaign and campaign_date):
+            raise ZenodoError(
+                f"no {CONFIG_NAME} found; pass --campaign and --campaign-date "
+                "(or --title for a record that cannot be named from a campaign)"
+            )
         generate_zenodo_config(folder_path, title, overrides=overrides, today=today)
+        logger.info("Generated {}", folder_path / CONFIG_NAME)
     resolved = load_zenodo_config(folder_path, config_path, overrides, today=today)
+    logger.info("Zenodo record {!r} (slug {})", resolved["title"], resolved["slug"])
     stamp_date = (today or date.today()).isoformat()
     selected = _selected_files(folder_path)
     skipped_folders = _warn_about_subfolders(folder_path)
@@ -1178,7 +1336,13 @@ app = typer.Typer(add_completion=False, help="Upload a raw-data folder to a Zeno
 @app.command()
 def zenodo_upload_cli(
     folder: Path = typer.Argument(..., exists=True, file_okay=False, readable=True),
-    title: str | None = typer.Option(None, help="Dataset title; required when generating YAML."),
+    title: str | None = typer.Option(
+        None, help="Explicit title; only for a record that has no campaign."
+    ),
+    campaign: str | None = typer.Option(None, help="Campaign name used to build the title."),
+    campaign_date: str | None = typer.Option(
+        None, metavar="YYYY[-MM[-DD]]", help="Campaign date used to build the title."
+    ),
     config: Path | None = typer.Option(None, help="Use an alternative YAML configuration."),
     community: str | None = typer.Option(None, help="Override the target community slug."),
     publish: bool = typer.Option(
@@ -1201,6 +1365,8 @@ def zenodo_upload_cli(
         result = upload_raw_folder(
             folder,
             title=title,
+            campaign=campaign,
+            campaign_date=campaign_date,
             config=config,
             community=community,
             publish=publish,

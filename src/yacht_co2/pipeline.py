@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -15,8 +14,10 @@ from .collocate import collocate_track, resolve_air_co2
 from .export import export_dataset
 from .ingest import read_expedition
 from .manifest import ExpeditionManifest, load_manifest
+from .project import load_platform
 from .providers import ProductProvider, fetch_products
 from .qc import apply_qc
+from .report import summarise, write_report
 from .science import calibrate_co2, derive_fco2, derive_flux, derive_pco2
 from .site import build_site
 from .video import render_video
@@ -30,6 +31,7 @@ class RunResult:
     products: dict[str, xr.Dataset] = field(default_factory=dict)
     artifacts: dict[str, Path] = field(default_factory=dict)
     product_status: list[dict[str, str]] = field(default_factory=list)
+    summary: dict[str, Any] = field(default_factory=dict)
 
 
 def _code_hash() -> str:
@@ -149,18 +151,13 @@ class Pipeline:
         if make_video:
             video_config: dict[str, Any] = self.manifest.outputs.get("video_options", {})
             artifacts["video"] = render_video(ds, output / "track.mp4", **video_config)
-        run_manifest = output / "run.json"
-        run_manifest.write_text(
-            json.dumps(
-                {
-                    "manifest_sha256": self.manifest.digest,
-                    "code_sha256": _code_hash(),
-                    "artifacts": {key: str(value) for key, value in artifacts.items()},
-                    "products": statuses,
-                },
-                indent=2,
-            )
+        summary = summarise(
+            ds,
+            manifest=self.manifest,
+            platform=load_platform(self.manifest.path.parent),
+            artifacts=artifacts,
+            products=statuses,
         )
-        artifacts["run_manifest"] = run_manifest
+        artifacts.update(write_report(summary, output))
         logger.success("Pipeline complete for {}", self.manifest.name)
-        return RunResult(ds, products, artifacts, statuses)
+        return RunResult(ds, products, artifacts, statuses, summary)

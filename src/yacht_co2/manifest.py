@@ -11,6 +11,7 @@ from typing import Any
 import yaml
 
 from .errors import ManifestError
+from .validation import Finding, errors, validate_manifest_document
 
 
 @dataclass(frozen=True)
@@ -41,8 +42,13 @@ class ExpeditionManifest:
         return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def load_manifest(path: str | Path) -> ExpeditionManifest:
-    """Load an expedition manifest and enforce required top-level contracts."""
+def check_manifest(path: str | Path) -> tuple[dict[str, Any], list[Finding]]:
+    """Read a manifest and return it with every validation finding.
+
+    Unlike :func:`load_manifest` this reports warnings too, and does not raise
+    for a document that is merely suspect, so a caller can show the whole
+    picture at once.
+    """
     path = Path(path).resolve()
     if not path.is_file():
         raise ManifestError(f"manifest does not exist: {path}")
@@ -50,18 +56,17 @@ def load_manifest(path: str | Path) -> ExpeditionManifest:
         raw = yaml.safe_load(path.read_text())
     except yaml.YAMLError as exc:
         raise ManifestError(f"invalid YAML in {path}: {exc}") from exc
-    if not isinstance(raw, dict):
-        raise ManifestError("manifest root must be a mapping")
-    for key in ("expedition", "inputs"):
-        if not isinstance(raw.get(key), dict):
-            raise ManifestError(f"manifest requires a {key!r} mapping")
-    if not raw["expedition"].get("name"):
-        raise ManifestError("expedition.name is required")
-    if not raw["inputs"].get("logs"):
-        raise ManifestError("inputs.logs is required")
-    products = raw.get("products", [])
-    if not isinstance(products, list):
-        raise ManifestError("products must be a list")
+    return (raw if isinstance(raw, dict) else {}), validate_manifest_document(raw, path)
+
+
+def load_manifest(path: str | Path) -> ExpeditionManifest:
+    """Load an expedition manifest, refusing one that cannot produce a run."""
+    path = Path(path).resolve()
+    raw, findings = check_manifest(path)
+    fatal = errors(findings)
+    if fatal:
+        detail = "; ".join(f"{finding.where}: {finding.message}" for finding in fatal)
+        raise ManifestError(f"invalid manifest {path}: {detail}")
     return ExpeditionManifest(
         path=path,
         expedition=raw["expedition"],
@@ -72,7 +77,7 @@ def load_manifest(path: str | Path) -> ExpeditionManifest:
         equilibrator=raw.get("equilibrator", {}),
         qc=raw.get("qc", {}),
         atmosphere=raw.get("atmosphere", {}),
-        products=products,
+        products=raw.get("products", []),
         flux=raw.get("flux", {}),
         outputs=raw.get("outputs", {}),
         raw=raw,

@@ -1,0 +1,64 @@
+# Project-level defaults shared by every expedition in this repository.
+#
+# One block per consumer:
+#   platform:  vessel and instrument identity, reported by `yacht-co2 report`
+#   zenodo:    archival metadata, used by `zenodo-upload`
+#
+# Resolution is the same for both. Every project.yaml between the repository
+# root and the folder being processed is merged root-first, so a project.yaml
+# in a sub-directory refines this one and one file here serves every expedition
+# beneath it. Nearer configuration then overrides these defaults key by key:
+# an expedition manifest's `expedition:` block for platform, a data folder's
+# `zenodo.yaml` for zenodo.
+#
+# Put facts about the installation here and facts about a single race in the
+# manifest or the folder's own configuration.
+
+platform:
+  # Reported verbatim in REPORT.md; add or rename keys freely. Serials belong
+  # here rather than in code because they change when hardware is swapped, not
+  # when the software does.
+  #
+  # `vessel_name` (or `vessel`) is the one key both blocks share: the zenodo
+  # title_template below inherits it, so the boat is named here only.
+  vessel_name: Yoroshiku (Oliver Heer)
+  vessel_type: yacht IMOCA 60 class
+  instrument: SubCtech OceanPack Race
+  co2_sensor: LI850
+  ctd_sensor: CTD48-1892
+  meteo_sensor: PTB10_Barometer-U0250319
+#
+zenodo:
+  # Ordered list; each entry is exactly "last name, first name, ORCID". A data
+  # folder that sets its own list replaces this one completely.
+  creators:
+  - Gregor, Luke, 0000-0001-6071-1857
+  community: vendee-globe-co2
+  resource_type: dataset
+  license: cc-by-4.0
+  publisher: Zenodo # required before DataCite will register the DOI
+  description: |
+    Underway carbon dioxide observations collected from an ocean-going yacht,
+    including additional documentation. 
+  language: eng
+  keywords:
+  - carbon dioxide
+  - underway observations
+  - ocean
+  - sailing yacht
+  #
+  # A record is named from its campaign rather than typed out per folder. The
+  # template may use {vessel}, {campaign}, {campaign_date}, {year} and {slug}.
+  # {vessel} comes from platform.vessel_name above; the campaign comes from
+  # each folder's zenodo.yaml. Set `vessel:` here only to archive the boat
+  # under a different name than it is reported under.
+  title_template: Surface ocean CO2 measurements on board {vessel} during the {campaign} ({campaign_date})
+  #
+  # Left unset, the publication date is the day the record is first created.
+  publication_date: null
+  embargo:
+    enabled: false
+    months: 12
+    until: null
+  notes: ""
+  sandbox: false

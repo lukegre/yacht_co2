@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 from yacht_co2.errors import ZenodoError
 from yacht_co2.zenodo import (
     CONFIG_NAME,
+    DEFAULTS_BLOCK,
     DEFAULTS_NAME,
     STATE_NAME,
     ZenodoClient,
@@ -57,7 +58,7 @@ def test_parse_creators_rejects_malformed_entries(entries, message):
         parse_creators(entries)
 
 
-def test_generate_config_dates_and_folder_precedence(tmp_path):
+def test_generate_config_keeps_only_folder_facts_and_folder_precedence(tmp_path):
     path = generate_zenodo_config(
         tmp_path,
         "Raw data",
@@ -65,9 +66,12 @@ def test_generate_config_dates_and_folder_precedence(tmp_path):
         today=date(2024, 2, 29),
     )
     generated = yaml.safe_load(path.read_text())
-    assert generated["publication_date"] == "2024-02-29"
-    assert generated["embargo"]["enabled"] is False
-    assert generated["creators"] == ["Gregor, Luke, 0000-0001-6071-1857"]
+    # Shared metadata stays inherited instead of being restated per folder.
+    assert generated == {"community": "generated", "title": "Raw data"}
+    resolved = load_zenodo_config(tmp_path, today=date(2024, 2, 29))
+    assert resolved["publication_date"] == "2024-02-29"
+    assert resolved["embargo"]["enabled"] is False
+    assert resolved["creators"] == ["Gregor, Luke, 0000-0001-6071-1857"]
 
     generated.update(
         {
@@ -81,24 +85,28 @@ def test_generate_config_dates_and_folder_precedence(tmp_path):
     assert loaded["creators"] == ["Smith, Jane, 0000-0002-1825-0097"]
 
 
-def test_defaults_come_from_the_nearest_env_zenodo(tmp_path, monkeypatch):
-    """A folder's own ``.env.zenodo`` outranks the one in the invocation directory."""
+def write_defaults(directory, mapping):
+    """Write project defaults, which live in the ``zenodo`` block."""
+    (directory / DEFAULTS_NAME).write_text(yaml.safe_dump({DEFAULTS_BLOCK: mapping}))
+
+
+def test_defaults_come_from_the_nearest_project_file(tmp_path, monkeypatch):
+    """A folder's own defaults outrank the ones in the invocation directory."""
     working = tmp_path / "cwd"
     working.mkdir()
-    (working / DEFAULTS_NAME).write_text(
-        yaml.safe_dump(
-            {
-                "creators": ["Smith, Jane, 0000-0002-1825-0097"],
-                "community": "from-cwd",
-                "resource_type": "dataset",
-                "license": "cc-by-4.0",
-                "publisher": "Zenodo",
-                "description": "d",
-                "language": "eng",
-                "keywords": [],
-                "embargo": {"enabled": False},
-            }
-        )
+    write_defaults(
+        working,
+        {
+            "creators": ["Smith, Jane, 0000-0002-1825-0097"],
+            "community": "from-cwd",
+            "resource_type": "dataset",
+            "license": "cc-by-4.0",
+            "publisher": "Zenodo",
+            "description": "d",
+            "language": "eng",
+            "keywords": [],
+            "embargo": {"enabled": False},
+        },
     )
     monkeypatch.chdir(working)
 
@@ -107,15 +115,108 @@ def test_defaults_come_from_the_nearest_env_zenodo(tmp_path, monkeypatch):
     (folder / CONFIG_NAME).write_text("title: Test\n")
     assert load_zenodo_config(folder)["community"] == "from-cwd"
 
-    (folder / DEFAULTS_NAME).write_text(yaml.safe_dump({"community": "from-folder"}))
+    write_defaults(folder, {"community": "from-folder"})
     assert load_zenodo_config(folder)["community"] == "from-folder"
 
 
-def test_missing_env_zenodo_names_the_directories_searched(tmp_path, monkeypatch):
+def test_missing_defaults_names_the_directories_searched(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     folder = tmp_path / "voyage"
     folder.mkdir()
-    with pytest.raises(ZenodoError, match=f"no {DEFAULTS_NAME} defaults found"):
+    with pytest.raises(ZenodoError, match=f"no '{DEFAULTS_BLOCK}' block"):
+        load_zenodo_config(folder)
+
+
+def test_a_project_file_without_a_zenodo_block_is_not_defaults(tmp_path, monkeypatch):
+    """A platform-only project.yaml must not masquerade as zenodo defaults."""
+    monkeypatch.chdir(tmp_path)
+    folder = tmp_path / "voyage"
+    folder.mkdir()
+    (tmp_path / DEFAULTS_NAME).write_text(yaml.safe_dump({"platform": {"vessel_name": "Y"}}))
+
+    with pytest.raises(ZenodoError, match=f"no '{DEFAULTS_BLOCK}' block"):
+        load_zenodo_config(folder)
+
+
+def test_the_superseded_standalone_file_is_still_read(tmp_path, monkeypatch):
+    """Projects that have not merged their configuration keep working."""
+    monkeypatch.chdir(tmp_path)
+    folder = tmp_path / "voyage"
+    folder.mkdir()
+    (tmp_path / "zenodo_project.yaml").write_text(yaml.safe_dump(PROJECT_DEFAULTS))
+    (folder / CONFIG_NAME).write_text("title: Test\n")
+
+    assert load_zenodo_config(folder)["community"] == "vendee-globe-co2"
+
+
+def test_the_zenodo_block_outranks_a_standalone_file_beside_it(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    folder = tmp_path / "voyage"
+    folder.mkdir()
+    (tmp_path / "zenodo_project.yaml").write_text(yaml.safe_dump(PROJECT_DEFAULTS))
+    write_defaults(tmp_path, {"community": "from-project-block"})
+    (folder / CONFIG_NAME).write_text("title: Test\n")
+
+    assert load_zenodo_config(folder)["community"] == "from-project-block"
+
+
+def test_the_vessel_is_inherited_from_the_platform_block(tmp_path, monkeypatch):
+    """The boat is named once, under platform, and reused by title_template."""
+    monkeypatch.chdir(tmp_path)
+    folder = tmp_path / "voyage"
+    folder.mkdir()
+    defaults = {key: value for key, value in PROJECT_DEFAULTS.items() if key != "vessel"}
+    (tmp_path / DEFAULTS_NAME).write_text(
+        yaml.safe_dump({"platform": {"vessel_name": "Yoroshiku"}, DEFAULTS_BLOCK: defaults})
+    )
+    (folder / CONFIG_NAME).write_text(
+        yaml.safe_dump({"campaign": "Fastnet Race", "campaign_date": "2023-07-24"})
+    )
+
+    assert "on board Yoroshiku during" in load_zenodo_config(folder)["title"]
+
+
+def test_platform_vessel_may_use_either_key(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    folder = tmp_path / "voyage"
+    folder.mkdir()
+    defaults = {key: value for key, value in PROJECT_DEFAULTS.items() if key != "vessel"}
+    (tmp_path / DEFAULTS_NAME).write_text(
+        yaml.safe_dump({"platform": {"vessel": "Fleur"}, DEFAULTS_BLOCK: defaults})
+    )
+    (folder / CONFIG_NAME).write_text(
+        yaml.safe_dump({"campaign": "Fastnet Race", "campaign_date": "2023-07-24"})
+    )
+
+    assert "on board Fleur during" in load_zenodo_config(folder)["title"]
+
+
+def test_an_explicit_zenodo_vessel_outranks_the_platform_one(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    folder = tmp_path / "voyage"
+    folder.mkdir()
+    (tmp_path / DEFAULTS_NAME).write_text(
+        yaml.safe_dump(
+            {
+                "platform": {"vessel_name": "Reported name"},
+                DEFAULTS_BLOCK: {**PROJECT_DEFAULTS, "vessel": "Archived name"},
+            }
+        )
+    )
+    (folder / CONFIG_NAME).write_text(
+        yaml.safe_dump({"campaign": "Fastnet Race", "campaign_date": "2023-07-24"})
+    )
+
+    assert "on board Archived name during" in load_zenodo_config(folder)["title"]
+
+
+def test_a_non_mapping_zenodo_block_is_rejected(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    folder = tmp_path / "voyage"
+    folder.mkdir()
+    (tmp_path / DEFAULTS_NAME).write_text(yaml.safe_dump({DEFAULTS_BLOCK: "cc-by-4.0"}))
+
+    with pytest.raises(ZenodoError, match=f"{DEFAULTS_BLOCK} must be a mapping"):
         load_zenodo_config(folder)
 
 
@@ -220,6 +321,34 @@ class FakeClient:
 
     def request_json(self, method, path):
         raise AssertionError(f"unexpected raw request: {method} {path}")
+
+
+PROJECT_DEFAULTS = {
+    "creators": ["Gregor, Luke, 0000-0001-6071-1857"],
+    "community": "vendee-globe-co2",
+    "resource_type": "dataset",
+    "license": "cc-by-4.0",
+    "publisher": "Zenodo",
+    "description": "Raw underway carbon dioxide observations.",
+    "language": "eng",
+    "keywords": [],
+    "embargo": {"enabled": False},
+    "vessel": "YOROSHIKU (Oliver Heer)",
+}
+
+
+@pytest.fixture(autouse=True)
+def project_defaults(tmp_path_factory, monkeypatch):
+    """Give every test the shared project defaults, in a directory of its own.
+
+    They are planted in the invocation directory — the lowest-precedence
+    location — so a test can still override them, or chdir elsewhere to prove
+    that no defaults were found.
+    """
+    directory = tmp_path_factory.mktemp("project")
+    write_defaults(directory, PROJECT_DEFAULTS)
+    monkeypatch.chdir(directory)
+    return directory
 
 
 @pytest.fixture
@@ -885,11 +1014,11 @@ def test_with_pids_preserves_reserved_doi_only_when_present():
     assert "pids" not in no_pids_at_all
 
 
-def test_direct_cli_requires_title_then_generates_config(tmp_path):
+def test_direct_cli_requires_a_name_then_generates_config(tmp_path):
     runner = CliRunner()
     missing = runner.invoke(app, [str(tmp_path), "--dry-run"])
     assert missing.exit_code != 0
-    assert "--title is required" in missing.output
+    assert "--campaign and --campaign-date" in missing.output
     valid = runner.invoke(app, [str(tmp_path), "--title", "Raw voyage", "--dry-run"])
     assert valid.exit_code == 0
     assert "dry run valid" in valid.output
@@ -971,3 +1100,144 @@ def test_upload_logs_the_file_plan_and_per_file_progress(tmp_path, logs):
     assert any(
         "now holds 2 file(s): 1 uploaded this run, 1 already present" in line for line in logs
     )
+
+
+def test_title_is_generated_from_the_campaign_and_slugged_by_folder_name(tmp_path):
+    folder = tmp_path / "2023-07-24_oliver-heer_fastnet"
+    folder.mkdir()
+    (folder / CONFIG_NAME).write_text(
+        yaml.safe_dump({"campaign": "Fastnet Race", "campaign_date": "2023-07-24"})
+    )
+
+    resolved = load_zenodo_config(folder)
+    assert resolved["title"] == (
+        "Surface ocean CO2 measurements on board YOROSHIKU (Oliver Heer) during the "
+        "Fastnet Race (2023-07-24)"
+    )
+    assert resolved["slug"] == "2023-07-24_oliver-heer_fastnet"
+
+    metadata = upload_raw_folder(folder, dry_run=True)["metadata"]["metadata"]
+    assert metadata["title"] == resolved["title"]
+    assert metadata["identifiers"] == [
+        {"scheme": "other", "identifier": "2023-07-24_oliver-heer_fastnet"}
+    ]
+    assert metadata["dates"] == [
+        {
+            "date": "2023-07-24",
+            "type": {"id": "collected"},
+            "description": "Campaign date",
+        }
+    ]
+
+
+def test_campaign_date_accepts_year_and_month_precision(tmp_path):
+    (tmp_path / CONFIG_NAME).write_text(
+        yaml.safe_dump({"campaign": "Route du Rhum", "campaign_date": "2022-11"})
+    )
+    assert load_zenodo_config(tmp_path)["title"].endswith("during the Route du Rhum (2022-11)")
+
+    (tmp_path / CONFIG_NAME).write_text(
+        yaml.safe_dump({"campaign": "Vendee Globe", "campaign_date": "2024"})
+    )
+    assert load_zenodo_config(tmp_path)["title"].endswith("during the Vendee Globe (2024)")
+
+    (tmp_path / CONFIG_NAME).write_text(
+        yaml.safe_dump({"campaign": "Fastnet", "campaign_date": "24 July 2023"})
+    )
+    with pytest.raises(ZenodoError, match="invalid campaign_date"):
+        load_zenodo_config(tmp_path)
+
+
+def test_a_title_cannot_be_combined_with_a_campaign(tmp_path):
+    (tmp_path / CONFIG_NAME).write_text(
+        yaml.safe_dump(
+            {"title": "Hand written", "campaign": "Fastnet Race", "campaign_date": "2023-07-24"}
+        )
+    )
+    with pytest.raises(ZenodoError, match="title cannot be combined with campaign"):
+        load_zenodo_config(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("config", "message"),
+    [
+        ({}, "campaign and campaign_date required"),
+        ({"campaign": "Fastnet Race"}, "campaign_date required"),
+        ({"campaign_date": "2023-07-24"}, "campaign required"),
+    ],
+)
+def test_campaign_and_campaign_date_are_both_required(tmp_path, config, message):
+    (tmp_path / CONFIG_NAME).write_text(yaml.safe_dump(config) if config else "{}\n")
+    with pytest.raises(ZenodoError, match=message):
+        load_zenodo_config(tmp_path)
+
+
+def test_title_template_is_overridable_and_validated(tmp_path):
+    (tmp_path / CONFIG_NAME).write_text(
+        yaml.safe_dump(
+            {
+                "campaign": "Fastnet Race",
+                "campaign_date": "2023-07-24",
+                "title_template": "{campaign} {year} from {vessel} [{slug}]",
+            }
+        )
+    )
+    assert load_zenodo_config(tmp_path)["title"] == (
+        f"Fastnet Race 2023 from YOROSHIKU (Oliver Heer) [{tmp_path.name}]"
+    )
+
+    (tmp_path / CONFIG_NAME).write_text(
+        yaml.safe_dump(
+            {
+                "campaign": "Fastnet Race",
+                "campaign_date": "2023-07-24",
+                "title_template": "{campaign} on {skipper}",
+            }
+        )
+    )
+    with pytest.raises(ZenodoError, match="unknown field\\(s\\) skipper"):
+        load_zenodo_config(tmp_path)
+
+
+def test_defaults_are_inherited_from_a_parent_directory(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    folder = project / "data" / "2023-07-24_oliver-heer_fastnet"
+    folder.mkdir(parents=True)
+    write_defaults(project, {**PROJECT_DEFAULTS, "community": "from-project", "vessel": "Fleur"})
+    (folder / CONFIG_NAME).write_text(
+        yaml.safe_dump({"campaign": "Fastnet Race", "campaign_date": "2023-07-24"})
+    )
+    # An unrelated working directory must not be needed to find them.
+    monkeypatch.chdir(tmp_path)
+
+    resolved = load_zenodo_config(folder)
+    assert resolved["community"] == "from-project"
+    assert "on board Fleur during the Fastnet Race" in resolved["title"]
+
+
+def test_the_legacy_defaults_filename_still_works(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    folder = project / "voyage"
+    folder.mkdir(parents=True)
+    (project / ".env.zenodo").write_text(
+        yaml.safe_dump({**PROJECT_DEFAULTS, "community": "from-legacy"})
+    )
+    (folder / CONFIG_NAME).write_text(yaml.safe_dump({"title": "Raw voyage"}))
+    monkeypatch.chdir(tmp_path)
+
+    assert load_zenodo_config(folder)["community"] == "from-legacy"
+
+
+def test_a_generated_config_keeps_the_campaign_not_the_rendered_title(tmp_path):
+    folder = tmp_path / "2023-07-24_oliver-heer_fastnet"
+    folder.mkdir()
+
+    path = generate_zenodo_config(
+        folder, overrides={"campaign": "Fastnet Race", "campaign_date": "2023-07-24"}
+    )
+    generated = yaml.safe_load(path.read_text())
+    assert generated["campaign"] == "Fastnet Race"
+    assert generated["campaign_date"] == "2023-07-24"
+    # A persisted title would collide with the campaign on the next run.
+    assert "title" not in generated
+    assert "Fastnet Race (2023-07-24)" in load_zenodo_config(folder)["title"]
