@@ -128,8 +128,9 @@ Public processing stages are `read_log_file`, `read_expedition`, `apply_qc`,
 
 ## Upload raw observations to Zenodo
 
-`zenodo-upload` is a standalone command for creating a resumable draft with the
-top-level files from one raw-data folder:
+`zenodo-upload` is a standalone command for creating a resumable Zenodo draft
+with the top-level files from one raw-data folder and, by default, submitting
+it to a community for review:
 
 ```console
 export ZENODO_ACCESS_TOKEN="..."
@@ -145,15 +146,19 @@ process environment are never overwritten. `.env` is ignored by Git, excluded
 from uploads as a hidden file, and is not read during `--dry-run`.
 
 On first use, `--title` is required and the command writes a complete, editable
-`data/2306_fastnet/zenodo.yaml` before contacting Zenodo. Its publication date
-is the current date and its default embargo ends on the same calendar date 12
-months later (29 February is clamped to 28 February when needed). Configuration
-is resolved in this order: packaged defaults, the folder YAML (or `--config`),
-then CLI overrides.
+`data/2306_fastnet/zenodo.yaml` before contacting Zenodo, with today's date as
+the publication date. Configuration is resolved in this order: `.env.zenodo`
+defaults, the folder's `zenodo.yaml` (or `--config`), then CLI flags.
+`.env.zenodo` is itself YAML despite its name; it is searched for in the
+current directory, beside an alternative `--config`, and in the data folder
+itself, and every copy found is merged in that order, so a data folder can
+override a single shared key (e.g. just `community:`) without restating the
+whole file. The repository ships one at its root; if none is found anywhere,
+the command fails and names the directories it searched.
 
 Creators form an ordered YAML list. Each item must contain exactly a last name,
 first name, and checksum-valid ORCID separated by commas. Bare ORCIDs and ORCID
-URLs are accepted; a folder list replaces the packaged creator list completely.
+URLs are accepted; a folder list replaces the shared creator list completely.
 
 ```yaml
 title: Raw underway CO₂ observations — Fastnet 2023
@@ -163,41 +168,66 @@ creators:
 community: vendee-globe-co2
 resource_type: dataset
 license: cc-by-4.0
+publisher: Zenodo
 description: Raw underway carbon dioxide observations from an ocean-going yacht.
 language: eng
 keywords: [carbon dioxide, underway observations, ocean]
 publication_date: 2026-09-09
 embargo:
-  enabled: true
+  enabled: false
   months: 12
-  until: 2027-09-09
+  until: null
 notes: ""
 sandbox: false
 ```
 
 Only top-level regular files are uploaded. Hidden files, symlinks,
-`zenodo.yaml`, `.zenodo-upload.json`, and directories are excluded. Markdown
-files are also copied into the record's notes with HTML escaped. The command
-reserves a DOI but leaves the record as a draft unless `--publish` is supplied:
+`zenodo.yaml`, `.zenodo-upload.json`, and directories are excluded. A Zenodo
+record's files are a flat namespace of keys with no directory concept, so
+subfolders cannot be uploaded at all: every run warns about the ones it finds
+and names them (`--dry-run` also lists them as `skipped subfolders`). Pack a
+subfolder into a single archive beside the other files if its contents have to
+be archived. Markdown
+files are also copied into the record's notes with HTML escaped. `publisher`
+(default `Zenodo`) is required — DataCite needs it before Zenodo will register
+the DOI. The command reserves a DOI and, by default, submits the draft to its
+configured community for review (the community slug is resolved to its id
+automatically); pass `--no-publish` to stop at the draft stage:
 
 ```console
-uv run zenodo-upload data/2306_fastnet --publish
+uv run zenodo-upload data/2306_fastnet --no-publish
 ```
 
-Here, “publish” means submit the draft to the configured community for review.
-The record becomes public only when a community curator accepts it. While a
-review is pending, reruns report it without changing metadata or files.
+The record becomes public only when a community curator accepts it. Once a
+DOI is reserved it is written back as `doi:` into the folder's `zenodo.yaml`;
+once the draft has been submitted for review, `submitted: YYYY-MM-DD` is added
+too, making `zenodo.yaml` the durable record of what a folder produced. While
+a review is pending, reruns leave it unchanged unless the notes — the folder's
+markdown files plus the `notes:` config value — have changed, in which case
+the updated notes are pushed to the draft and the review stays pending. Files
+are frozen for the duration of the review, so a rerun that finds new or
+changed local files warns that they will not be uploaded and points at
+`--new-version` once the curator has decided.
 
 Non-secret upload progress is kept in `.zenodo-upload.json`. A retry resumes the
-same draft, skips checksum-identical files, and replaces changed files. Files
+same draft, skips checksum-identical files, and replaces changed files. Every
+run logs what it is about to do before transferring anything — the draft it
+resumed and where that record id came from, a file plan counting new, changed,
+unchanged and remote-only files, one line per file as its upload starts, and a
+closing summary of how many files the draft now holds. Files
 that exist only in the remote draft prevent review submission; inspect them and
 use `--prune` to delete them deliberately. Published records are immutable and
 need `--new-version` (optionally with `--record-id`) before more files can be
-uploaded.
+uploaded; the new draft imports the previous version's files, so files
+unchanged since then are not re-uploaded.
 
-Use `--no-embargo` to make files public immediately, or `--embargo-until
-YYYY-MM-DD` to select an explicit end date. For safe end-to-end experiments,
-use a separate sandbox account and token:
+Files are public immediately unless embargoed. Pass `--embargo YYYY-MM-DD` to
+restrict them until that date. An embargo can also be set in
+`.env.zenodo`/`zenodo.yaml` via `embargo: {enabled: true, months: N}`; an
+explicit `until` wins, and otherwise the release date is `months` after the
+publication date (clamped to the end of short months, e.g. 29 February clamps
+to 28 February). For safe end-to-end experiments, use a separate sandbox
+account and token:
 
 ```console
 export ZENODO_SANDBOX_ACCESS_TOKEN="..."
@@ -205,10 +235,17 @@ uv run zenodo-upload data/2306_fastnet --sandbox --dry-run
 uv run zenodo-upload data/2306_fastnet --sandbox
 ```
 
-`--dry-run` may generate and validates the YAML and checksums locally, but makes
-no API requests. API requests retry rate limits and transient server/network
-failures. Tokens are read only from the environment and are never written to
-the YAML, state file, output, or exception details.
+`--dry-run` generates and validates the YAML and computes checksums locally,
+but makes no API requests. Otherwise, uploads talk to Zenodo's modern records
+API (`/api/records`) directly over `requests`; there is no third-party Zenodo
+client dependency. Requests retry connection errors and HTTP
+429/500/502/503/504 with bounded exponential backoff, honouring
+`Retry-After`; each file is streamed from disk — never read fully into
+memory — through the records API's initiate/upload/commit steps, and its md5
+is verified against the local checksum before the upload counts as done. The
+token is sent only as an `Authorization` header, never in a URL, and is
+redacted from error messages; it is read only from the environment and never
+written to the YAML, state file, output, or exception details.
 
 The same workflow is available from Python through `load_zenodo_config`,
 `generate_zenodo_config`, `parse_creators`, `ZenodoClient`, and
