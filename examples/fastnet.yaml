@@ -1,0 +1,48 @@
+expedition:
+  id: fastnet-2023
+  name: Fastnet 2023
+  vessel: Oliver Heer Ocean Racing
+  instrument: SubCtech OceanPack Race / LI-850
+inputs:
+  logs: ../data/2306_fastnet/*.log
+  timezone: UTC
+columns: {}
+phases:
+  analysis: [5]
+  air: [22]
+calibration:
+  method: instrument
+  input: co2
+equilibrator:
+  h2o: h2o
+  h2o_scale: 1000
+  pressure: cellpress
+  equilibrator_temperature: celltemp
+  sea_temperature: watertemp
+  temperature_coefficient: 0.0423
+qc:
+  analysis_phases: [5]
+  minimum_water_flow: 0.1
+  minimum_gas_flow: 0.1
+  ranges:
+    co2: [100, 1000]
+    watertemp: [-2.5, 45]
+    salinity: [0, 45]
+atmosphere:
+  air_phases: [22]
+  time_tolerance: 7D
+products: []
+flux:
+  formulation: wanninkhof2014
+  coefficient: 0.251
+outputs:
+  directory: ../outputs/fastnet
+  cache: ../.cache/yacht-co2
+  formats: [netcdf, zarr, csv]
+  site: true
+  single_html: true
+  video: false
+  video_options:
+    variable: pco2_seawater
+    frame_interval: 1h
+    fps: 12
