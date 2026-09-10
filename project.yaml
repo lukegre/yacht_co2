@@ -43,6 +43,7 @@ zenodo:
   language: eng
   keywords:
   - carbon dioxide
+  - fco2
   - underway observations
   - ocean
   - sailing yacht
@@ -52,7 +53,7 @@ zenodo:
   # {vessel} comes from platform.vessel_name above; the campaign comes from
   # each folder's zenodo.yaml. Set `vessel:` here only to archive the boat
   # under a different name than it is reported under.
-  title_template: Surface ocean CO2 measurements on board {vessel} during the {campaign} ({campaign_date})
+  title_template: Surface ocean CO2 – {vessel} – {campaign} ({campaign_date})
   #
   # Left unset, the publication date is the day the record is first created.
   publication_date: null

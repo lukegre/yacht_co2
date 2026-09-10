@@ -24,11 +24,17 @@ from urllib.parse import quote
 import requests
 import typer
 import yaml
-from dotenv import load_dotenv
 from loguru import logger
 
-from .errors import ZenodoError
-from .project import PROJECT_CONFIG_NAME, config_directories, deep_merge, read_yaml
+from .errors import ManifestError, ZenodoError
+from .project import (
+    PROJECT_CONFIG_NAME,
+    config_directories,
+    configured_config_path,
+    deep_merge,
+    load_environment,
+    read_yaml,
+)
 
 CONFIG_NAME = "zenodo.yaml"
 # Shared metadata lives beside the platform defaults, in one project file with
@@ -164,10 +170,24 @@ def _defaults(folder: Path, config_path: Path) -> dict[str, Any]:
     carry what is specific to it. Defaults live in the ``zenodo`` block of
     ``project.yaml``; the superseded standalone files are still read, as whole
     mappings, and rank below it in the same directory.
+
+    A project configuration named by ``YACHT_CO2_PROJECT_CONFIG`` — exported or
+    set in a nearby ``.env`` — is merged first, so a ``project.yaml`` found by
+    the search still refines it. This matches the resolution every other
+    command uses.
     """
     directories = _defaults_directories(folder, config_path)
+    load_environment(directories)
     resolved: dict[str, Any] = {}
     found = False
+    try:
+        configured = configured_config_path()
+    except ManifestError as exc:
+        raise ZenodoError(str(exc)) from exc
+    if configured is not None:
+        document = _read_yaml(configured)
+        resolved = deep_merge(resolved, _zenodo_block(document, configured))
+        found = DEFAULTS_BLOCK in document
     for directory in directories:
         for name in LEGACY_DEFAULTS_NAMES:
             candidate = directory / name
@@ -998,13 +1018,8 @@ def _load_zenodo_environment(folder: Path, config_path: Path) -> None:
     directory and the invocation directory. Values are loaded only immediately
     before credentials are needed and are never logged.
     """
-    candidates = [folder / ".env", config_path.parent / ".env", Path.cwd() / ".env"]
-    seen: set[Path] = set()
-    for candidate in candidates:
-        resolved = candidate.resolve()
-        if resolved not in seen:
-            load_dotenv(resolved, override=False)
-            seen.add(resolved)
+    directories = [folder, config_path.parent, *reversed(config_directories(folder))]
+    load_environment(directories)
 
 
 def upload_raw_folder(

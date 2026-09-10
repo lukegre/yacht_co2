@@ -73,7 +73,7 @@ def config_directories(start: str | Path | None = None) -> list[Path]:
     return list(reversed(ancestors))
 
 
-def _load_environment(directories: list[Path]) -> None:
+def load_environment(directories: list[Path]) -> None:
     """Add ``.env`` values to the environment without overriding real exports."""
     for directory in (*directories, Path.cwd()):
         load_dotenv(directory / ".env", override=False)
@@ -104,7 +104,7 @@ def config_paths(start: str | Path | None = None) -> list[Path]:
     search alone applies, which finds the one in the repository root.
     """
     directories = config_directories(start)
-    _load_environment(directories)
+    load_environment(directories)
     configured = configured_config_path()
     found = [directory / PROJECT_CONFIG_NAME for directory in directories]
     paths = [*([configured] if configured else []), *found]

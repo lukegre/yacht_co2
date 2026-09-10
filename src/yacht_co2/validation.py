@@ -36,6 +36,45 @@ MANIFEST_SECTIONS = frozenset(
         "outputs",
     }
 )
+# Keys each section's consumer actually reads. A key outside these sets is
+# reported as unread rather than as an error: it changes nothing today, but it
+# is almost always a misspelling of one that would.
+SECTION_KEYS: dict[str, frozenset[str]] = {
+    "inputs": frozenset({"logs", "timezone"}),
+    "phases": frozenset({"analysis", "air"}),
+    "calibration": frozenset(
+        {
+            "method",
+            "input",
+            "zero_measured",
+            "span_measured",
+            "span_certified",
+            "standards",
+            "zero_phase",
+            "span_phases",
+        }
+    ),
+    "equilibrator": frozenset(
+        {
+            "h2o",
+            "h2o_scale",
+            "pressure",
+            "equilibrator_temperature",
+            "sea_temperature",
+            "temperature_coefficient",
+        }
+    ),
+    "qc": frozenset(
+        {"analysis_phases", "status_ok", "minimum_water_flow", "minimum_gas_flow", "ranges"}
+    ),
+    "atmosphere": frozenset(
+        {"air_phases", "time_tolerance", "observations_product", "noaa_product"}
+    ),
+    "flux": frozenset({"temperature", "salinity", "wind", "sea_fco2", "air_fco2", "coefficient"}),
+    "outputs": frozenset(
+        {"directory", "cache", "formats", "site", "single_html", "video", "video_options"}
+    ),
+}
 PROJECT_BLOCKS = frozenset({"platform", "zenodo"})
 # Keys the Zenodo resolver understands; anything else is a likely typo that
 # would be carried into a record silently.
@@ -214,6 +253,9 @@ def validate_manifest_document(raw: Any, path: str | Path) -> list[Finding]:
     if not isinstance(raw, Mapping):
         return [Finding("error", "manifest", "root must be a mapping")]
     check.unknown_keys(raw, MANIFEST_SECTIONS, "manifest")
+    for section, known in SECTION_KEYS.items():
+        if isinstance(raw.get(section), Mapping):
+            check.unknown_keys(raw[section], known, section)
 
     expedition = check.mapping(raw.get("expedition"), "expedition")
     if not raw.get("expedition"):

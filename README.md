@@ -201,6 +201,60 @@ The superseded standalone files `zenodo_project.yaml` and `.env.zenodo` are
 still read as whole mappings — a project that has not merged its configuration
 keeps working — and rank below a `zenodo:` block in the same directory.
 
+### Keeping the defaults somewhere else
+
+`YACHT_CO2_PROJECT_CONFIG` names the project configuration explicitly, so it
+can live outside the repository or under another name, and be shared by several
+repositories:
+
+```ini
+# .env
+YACHT_CO2_PROJECT_CONFIG=~/config/yacht-co2-project.yaml
+```
+
+The variable may be exported or set in a `.env` file beside the folder being
+processed, anywhere up to the repository root, or in the working directory.
+Being the *default*, the configured file ranks below the search: a
+`project.yaml` inside the repository still refines it, exactly as a nested one
+refines the root. Unset, the search alone applies and finds the `project.yaml`
+in the repository root. A path that names a file that does not exist is an
+error rather than a silent fallback, and `yacht-co2 validate` lists every file
+that was merged, in the order they were applied.
+
+## Validating configuration
+
+`yacht-co2 validate` checks the project configuration and, when given one, an
+expedition manifest — before any data is read:
+
+```console
+uv run yacht-co2 validate examples/fastnet.yaml
+```
+
+```
+project configuration: /…/project.yaml
+project configuration: ok
+examples/fastnet.yaml: warning: flux.formulation: is not read by anything; check the spelling
+valid: Fastnet 2023 (cfc9536c…)
+```
+
+Findings come in two severities, and every problem in a file is reported at
+once rather than one per run:
+
+- **error** — the run will fail or silently do the wrong thing: a section of the
+  wrong type, `calibration.method` outside `instrument`/`linear`, an export
+  format nothing can write, a `qc.ranges` pair whose minimum is not below its
+  maximum, malformed `creators`, a `title_template` token that does not exist.
+- **warning** — it still runs, but looks like a mistake: a key nothing reads
+  (usually a misspelling of one that matters), `inputs.logs` matching no files,
+  a `platform` block with no vessel, or `campaign`/`title` set project-wide
+  where it would name every record alike.
+
+The command exits non-zero only for errors. The same checks run inside
+`load_manifest`, so every command that loads a manifest refuses a broken one
+with all of its errors listed, instead of failing part-way through processing.
+A data folder's own `zenodo.yaml` is checked by `zenodo-upload --dry-run`,
+which validates metadata and lists the files without contacting Zenodo.
+
 ## Upload raw observations to Zenodo
 
 `zenodo-upload` is a standalone command for creating a resumable Zenodo draft

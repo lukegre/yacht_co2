@@ -42,14 +42,16 @@ def validate(
     """
     start = manifest.parent if manifest else Path.cwd()
     paths = config_paths(start)
+    project_findings: list[Finding] = []
     if not paths:
         typer.echo(f"no project configuration found (set {PROJECT_CONFIG_ENV} or add project.yaml)")
-    project_findings = validate_project_document(
-        load_project_config(start), source="project configuration"
-    )
-    for path in paths:
-        typer.echo(f"project configuration: {path}")
-    _echo_findings("project configuration", project_findings)
+    else:
+        for path in paths:
+            typer.echo(f"project configuration: {path}")
+        project_findings = validate_project_document(
+            load_project_config(start), source="project configuration"
+        )
+        _echo_findings("project configuration", project_findings)
 
     manifest_findings: list[Finding] = []
     if manifest is not None:
