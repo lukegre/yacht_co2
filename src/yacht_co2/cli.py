@@ -15,7 +15,13 @@ from .errors import RecordPublishedError, ZenodoError
 from .export import export_dataset
 from .manifest import MANIFEST_NAME, build_manifest, check_manifest, load_manifest
 from .pipeline import Pipeline
-from .project import PROJECT_CONFIG_ENV, config_paths, load_platform, load_project_config
+from .project import (
+    PROJECT_CONFIG_ENV,
+    config_paths,
+    load_platform,
+    load_project_config,
+    read_yaml,
+)
 from .report import summarise, write_report
 from .site import build_site, site_filename
 from .validation import Finding, errors, validate_project_document
@@ -49,18 +55,56 @@ def build_manifest_command(
     typer.echo(build_manifest(zenodo, output, defaults=defaults))
 
 
+def _campaign_identity(
+    config: Path, campaign: str | None, campaign_date: str | None
+) -> tuple[str, str]:
+    """Resolve the campaign name and date that name the upload and the site.
+
+    A command-line value wins over the folder's configuration, which is where
+    the campaign belongs: it is a fact about one race rather than the project.
+    The upload has already validated the file, so it is only read here.
+    """
+    document = read_yaml(config) if config.is_file() else {}
+    name = str(campaign or document.get("campaign") or "").strip()
+    when = str(campaign_date or document.get("campaign_date") or "").strip()
+    missing = [key for key, value in (("--campaign", name), ("--campaign-date", when)) if not value]
+    if missing:
+        raise typer.BadParameter(
+            f"{config} does not name the campaign; pass {' and '.join(missing)}"
+        )
+    return name, when
+
+
 @app.command("pipeline")
 def process_all(
-    campaign: str = typer.Option(..., help="Campaign name used for the upload and site."),
-    campaign_date: str = typer.Option(
-        ...,
+    config: Optional[Path] = typer.Option(  # noqa: UP045 - typer needs an explicit Optional
+        None,
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help=f"Campaign {ZENODO_CONFIG_NAME}; its folder is the one processed. "
+        "Defaults to the current directory's.",
+    ),
+    campaign: Optional[str] = typer.Option(  # noqa: UP045 - typer needs an explicit Optional
+        None, help="Campaign name; overrides the configuration."
+    ),
+    campaign_date: Optional[str] = typer.Option(  # noqa: UP045 - typer needs an explicit Optional
+        None,
         "--campaign-date",
         metavar="YYYY[-MM[-DD]]",
-        help="Campaign date used for the upload and site.",
+        help="Campaign date; overrides the configuration.",
     ),
 ) -> None:
-    """Upload and process the campaign in the current directory."""
-    folder = Path.cwd().resolve()
+    """Upload and process a campaign folder.
+
+    The folder is the one holding ``--config``, or the current directory. Its
+    ``zenodo.yaml`` names the campaign, so the two campaign options are needed
+    only to override that file or to write one for a folder that has none.
+    """
+    config_path = (
+        config.resolve() if config is not None else Path.cwd().resolve() / ZENODO_CONFIG_NAME
+    )
+    folder = config_path.parent
     manifest_path = folder / MANIFEST_NAME
     if manifest_path.exists():
         raise typer.BadParameter(
@@ -72,6 +116,7 @@ def process_all(
             folder,
             campaign=campaign,
             campaign_date=campaign_date,
+            config=config,
             publish=True,
         )
     except RecordPublishedError as exc:
@@ -81,7 +126,11 @@ def process_all(
     except ZenodoError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
-    manifest_path = build_manifest(folder / ZENODO_CONFIG_NAME)
+    # The upload writes a configuration for a folder that had none, so the
+    # campaign can now be read back from the file rather than the options.
+    campaign, campaign_date = _campaign_identity(config_path, campaign, campaign_date)
+
+    manifest_path = build_manifest(config_path)
     manifest = load_manifest(manifest_path)
 
     # A just-submitted record may still be awaiting community review and its

@@ -42,9 +42,7 @@ def test_cli_help_validate_and_site(tmp_path):
 
 def test_cli_build_manifest_from_zenodo(tmp_path):
     zenodo = tmp_path / "zenodo.yaml"
-    zenodo.write_text(
-        "campaign: Fastnet\ncampaign_date: 2023-06\ndoi: 10.5281/zenodo.12345\n"
-    )
+    zenodo.write_text("campaign: Fastnet\ncampaign_date: 2023-06\ndoi: 10.5281/zenodo.12345\n")
 
     result = CliRunner().invoke(app, ["build-manifest", str(zenodo)])
 
@@ -81,6 +79,7 @@ def test_cli_pipeline_uploads_and_builds_local_artifacts(tmp_path, monkeypatch):
         "folder": tmp_path,
         "campaign": "Fastnet",
         "campaign_date": "2023-06",
+        "config": None,
         "publish": True,
     }
     assert (tmp_path / "manifest.yaml").is_file()
@@ -90,6 +89,66 @@ def test_cli_pipeline_uploads_and_builds_local_artifacts(tmp_path, monkeypatch):
     site = (tmp_path / "fastnet-2023-06.html").read_text()
     assert "<title>Fastnet (2023-06)</title>" in site
     assert "window.YACHT_REPORT=" in site
+
+
+def test_cli_pipeline_takes_its_campaign_from_a_config_elsewhere(tmp_path, monkeypatch):
+    """``--config`` selects the folder and names the campaign without options."""
+    folder = tmp_path / "221205DATA0"
+    folder.mkdir()
+    (folder / "one.log").write_text(
+        "@NAME,DATE,TIME,FRAC,CO2,H2O,CellTemp,CellPress,Latitude,Longitude,"
+        "AIN0_mA/Waterflow,FLOWgas,waterTemp,salinity,Status,STATUS\n"
+        "@DATA,2023-01-01,00:00:00,0,400,10,20,1013.25,5000,00200,1,1,20,35,0,5\n"
+    )
+    config = folder / "zenodo.yaml"
+    config.write_text(
+        "campaign: Route du Rhum\ncampaign_date: 2022-12\ndoi: 10.5281/zenodo.12345\n"
+    )
+    working = tmp_path / "elsewhere"
+    working.mkdir()
+    monkeypatch.chdir(working)
+    upload_call = {}
+
+    def fake_upload(folder, **kwargs):
+        upload_call.update(folder=folder, **kwargs)
+        return {"status": "pending_review", "record_id": "12345"}
+
+    monkeypatch.setattr("yacht_co2.cli.upload_raw_folder", fake_upload)
+
+    result = CliRunner().invoke(app, ["pipeline", "--config", str(config)])
+
+    assert result.exit_code == 0, result.output
+    assert upload_call == {
+        "folder": folder,
+        "campaign": None,
+        "campaign_date": None,
+        "config": config,
+        "publish": True,
+    }
+    # Every product lands beside the configuration, not in the invocation
+    # directory, and is named from the campaign the file declares.
+    assert (folder / "manifest.yaml").is_file()
+    assert (folder / "REPORT.md").is_file()
+    assert (
+        "<title>Route du Rhum (2022-12)</title>"
+        in (folder / "route-du-rhum-2022-12.html").read_text()
+    )
+    assert not list(working.iterdir())
+
+
+def test_cli_pipeline_says_when_a_config_does_not_name_the_campaign(tmp_path, monkeypatch):
+    config = tmp_path / "zenodo.yaml"
+    config.write_text("doi: 10.5281/zenodo.12345\n")
+    monkeypatch.setattr("yacht_co2.cli.upload_raw_folder", lambda folder, **kwargs: {})
+
+    result = CliRunner().invoke(app, ["pipeline", "--config", str(config)])
+
+    assert result.exit_code != 0
+    # Rich wraps the message around the path and frames it, so the borders are
+    # dropped and the whitespace normalised before the text is compared.
+    rendered = " ".join(result.output.replace("\u2502", " ").split())
+    assert "does not name the campaign" in rendered
+    assert "pass --campaign and --campaign-date" in rendered
 
 
 def test_cli_process_reports_the_resolved_output_path(tmp_path, monkeypatch):
