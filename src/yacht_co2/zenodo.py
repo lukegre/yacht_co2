@@ -554,16 +554,23 @@ def _record_payload(config: Mapping[str, Any], markdown_files: Sequence[Path]) -
 
 
 def _with_pids(payload: Mapping[str, Any], record: Mapping[str, Any]) -> dict[str, Any]:
-    """Echo a draft's current ``pids`` back into an update payload.
+    """Mirror a draft's own ``pids`` in an update payload.
 
     ``PUT /api/records/{id}/draft`` replaces the whole resource, so an update
     that omits ``pids`` can drop a DOI that has already been reserved while the
     reservation itself survives server-side, leaving the draft unpublishable.
+
+    A draft carrying no DOI yet is sent an empty mapping rather than the
+    payload's ``provider`` intent. A new version draft is always in that state,
+    and answering it with the intent makes Zenodo fail the update with HTTP 500
+    and leaves the draft permanently unreadable, which then blocks every later
+    version of the same record. The DOI is reserved explicitly straight after
+    this update instead, so nothing is lost by leaving the intent out.
     """
     merged = dict(payload)
     existing = record.get("pids")
-    if isinstance(existing, Mapping) and existing.get("doi"):
-        merged["pids"] = dict(existing)
+    carried = dict(existing) if isinstance(existing, Mapping) and existing.get("doi") else {}
+    merged["pids"] = carried
     return merged
 
 

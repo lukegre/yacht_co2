@@ -1073,15 +1073,26 @@ def test_set_review_resolves_community_slug_once_and_caches_it():
 
 
 def test_with_pids_preserves_reserved_doi_only_when_present():
-    payload = {"metadata": {"title": "x"}}
+    # The real payload always carries the DOI intent a new draft is created
+    # with, so the update must decide what to do with it rather than inherit it.
+    payload = {"metadata": {"title": "x"}, "pids": {"doi": {"provider": "datacite"}}}
     with_doi = _with_pids(payload, {"pids": {"doi": {"identifier": "10.5281/zenodo.1"}}})
     assert with_doi["pids"] == {"doi": {"identifier": "10.5281/zenodo.1"}}
 
+    intent = _with_pids(payload, {"pids": {"doi": {"provider": "datacite"}}})
+    assert intent["pids"] == {"doi": {"provider": "datacite"}}
+
+    # A new version draft carries no DOI. Echoing the intent back at one makes
+    # Zenodo answer HTTP 500 and leaves the draft unreadable for good, so the
+    # update must send nothing and let the explicit reservation mint the DOI.
     without_doi = _with_pids(payload, {"pids": {}})
-    assert "pids" not in without_doi
+    assert without_doi["pids"] == {}
 
     no_pids_at_all = _with_pids(payload, {})
-    assert "pids" not in no_pids_at_all
+    assert no_pids_at_all["pids"] == {}
+
+    # The caller's payload is never mutated, so one payload serves every draft.
+    assert payload["pids"] == {"doi": {"provider": "datacite"}}
 
 
 def test_direct_cli_requires_a_name_then_generates_config(tmp_path):
