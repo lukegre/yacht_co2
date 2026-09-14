@@ -75,6 +75,32 @@ def _campaign_identity(
     return name, when
 
 
+def _campaign_manifest(folder: Path, config: Path) -> Path:
+    """Return the campaign manifest, building it only if there is not one yet.
+
+    A rerun resumes rather than starts again, so an existing manifest is kept:
+    it is meant to be tuned by hand, and rebuilding it would discard that. It
+    can still be stale, so a manifest pointing at a different record than the
+    configuration does is reported without stopping the run.
+    """
+    manifest_path = folder / MANIFEST_NAME
+    if not manifest_path.is_file():
+        return build_manifest(config)
+
+    logger.info("Reusing the campaign manifest {}", manifest_path)
+    archived = str(read_yaml(config).get("doi") or "").strip()
+    processing = str(read_yaml(manifest_path).get("inputs", {}).get("repository") or "").strip()
+    if archived and processing and archived != processing:
+        logger.warning(
+            "{} reads {} but {} now names {}; delete the manifest to rebuild it",
+            manifest_path.name,
+            processing,
+            config.name,
+            archived,
+        )
+    return manifest_path
+
+
 @app.command("pipeline")
 def process_all(
     config: Optional[Path] = typer.Option(  # noqa: UP045 - typer needs an explicit Optional
@@ -105,11 +131,6 @@ def process_all(
         config.resolve() if config is not None else Path.cwd().resolve() / ZENODO_CONFIG_NAME
     )
     folder = config_path.parent
-    manifest_path = folder / MANIFEST_NAME
-    if manifest_path.exists():
-        raise typer.BadParameter(
-            f"manifest already exists: {manifest_path}; remove it only if it is safe to regenerate"
-        )
 
     try:
         upload_raw_folder(
@@ -121,8 +142,8 @@ def process_all(
         )
     except RecordPublishedError as exc:
         # The archive already holds this folder, so there is nothing to upload
-        # and every local product below can still be built against its DOI.
-        logger.info("{}; processing the local logs against the published record", exc)
+        # and every product below is still built from the published record.
+        logger.info("{}; processing the published record", exc)
     except ZenodoError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
@@ -130,7 +151,7 @@ def process_all(
     # campaign can now be read back from the file rather than the options.
     campaign, campaign_date = _campaign_identity(config_path, campaign, campaign_date)
 
-    manifest_path = build_manifest(config_path)
+    manifest_path = _campaign_manifest(folder, config_path)
     manifest = load_manifest(manifest_path)
 
     # Products are built from the archived record rather than the folder they

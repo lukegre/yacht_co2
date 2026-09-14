@@ -177,6 +177,71 @@ def test_cli_pipeline_falls_back_to_local_logs_while_a_record_is_unreadable(tmp_
     assert "10.5281/zenodo.12345" in (tmp_path / "manifest.yaml").read_text()
 
 
+def test_cli_pipeline_reuses_an_existing_manifest(tmp_path, monkeypatch):
+    """A rerun resumes: the manifest is kept, edits and all, and work goes on."""
+    (tmp_path / "one.log").write_text(
+        "@NAME,DATE,TIME,FRAC,CO2,H2O,CellTemp,CellPress,Latitude,Longitude,"
+        "AIN0_mA/Waterflow,FLOWgas,waterTemp,salinity,Status,STATUS\n"
+        "@DATA,2023-01-01,00:00:00,0,400,10,20,1013.25,5000,00200,1,1,20,35,0,5\n"
+    )
+    (tmp_path / "zenodo.yaml").write_text(
+        "campaign: Fastnet\ncampaign_date: 2023-06\ndoi: 10.5281/zenodo.12345\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("yacht_co2.cli.upload_raw_folder", lambda folder, **kwargs: {})
+    monkeypatch.setattr(
+        "yacht_co2.pipeline.fetch_zenodo_logs",
+        lambda repository, pattern, cache, **kwargs: [tmp_path / "one.log"],
+    )
+
+    assert CliRunner().invoke(app, ["pipeline"]).exit_code == 0
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(manifest.read_text().replace("timezone: UTC", "timezone: Europe/Zurich"))
+    (tmp_path / "track.csv").unlink()
+
+    result = CliRunner().invoke(app, ["pipeline"])
+
+    assert result.exit_code == 0, result.output
+    # The hand-edited manifest survives and the remaining products are rebuilt.
+    assert "timezone: Europe/Zurich" in manifest.read_text()
+    assert (tmp_path / "track.csv").is_file()
+
+
+def test_cli_pipeline_reports_a_manifest_left_on_an_older_record(tmp_path, monkeypatch):
+    """A stale manifest is named rather than silently processed or rebuilt."""
+    (tmp_path / "one.log").write_text(
+        "@NAME,DATE,TIME,FRAC,CO2,H2O,CellTemp,CellPress,Latitude,Longitude,"
+        "AIN0_mA/Waterflow,FLOWgas,waterTemp,salinity,Status,STATUS\n"
+        "@DATA,2023-01-01,00:00:00,0,400,10,20,1013.25,5000,00200,1,1,20,35,0,5\n"
+    )
+    (tmp_path / "zenodo.yaml").write_text(
+        "campaign: Fastnet\ncampaign_date: 2023-06\ndoi: 10.5281/zenodo.12345\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("yacht_co2.cli.upload_raw_folder", lambda folder, **kwargs: {})
+    monkeypatch.setattr(
+        "yacht_co2.pipeline.fetch_zenodo_logs",
+        lambda repository, pattern, cache, **kwargs: [tmp_path / "one.log"],
+    )
+    assert CliRunner().invoke(app, ["pipeline"]).exit_code == 0
+    (tmp_path / "zenodo.yaml").write_text(
+        "campaign: Fastnet\ncampaign_date: 2023-06\ndoi: 10.5281/zenodo.99999\n"
+    )
+    messages = []
+    sink_id = logger.add(lambda message: messages.append(message.record["message"]))
+
+    try:
+        result = CliRunner().invoke(app, ["pipeline"])
+    finally:
+        logger.remove(sink_id)
+
+    assert result.exit_code == 0, result.output
+    assert any("10.5281/zenodo.99999" in message for message in messages)
+    # The stale manifest is kept, so the run is reproducible and the fix is the
+    # operator's to make.
+    assert "10.5281/zenodo.12345" in (tmp_path / "manifest.yaml").read_text()
+
+
 def test_cli_pipeline_says_when_a_config_does_not_name_the_campaign(tmp_path, monkeypatch):
     config = tmp_path / "zenodo.yaml"
     config.write_text("doi: 10.5281/zenodo.12345\n")
