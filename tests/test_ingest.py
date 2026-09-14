@@ -93,7 +93,9 @@ def test_merge_promotes_inconsistent_raw_fields_to_serializable_text(tmp_path):
 
 
 def test_fetch_zenodo_logs_selects_and_caches_record_files(tmp_path):
-    content = (HEADER + "@DATA,2023-01-01,12:00:00,0,400,10,20,1013,5000,00100,1,1,18,35,0,5\n").encode("latin-1")
+    content = (
+        HEADER + "@DATA,2023-01-01,12:00:00,0,400,10,20,1013,5000,00100,1,1,18,35,0,5\n"
+    ).encode("latin-1")
     url = "https://zenodo.org/api/records/12345/files/a.log/content"
     record = {
         "files": {
@@ -114,10 +116,38 @@ def test_fetch_zenodo_logs_selects_and_caches_record_files(tmp_path):
     assert paths[0].read_bytes() == content
     assert paths[0].parent == tmp_path / "zenodo" / "12345"
 
-    assert fetch_zenodo_logs(
-        "https://zenodo.org/records/12345", "*.log", tmp_path, session=session
-    ) == paths
+    assert (
+        fetch_zenodo_logs("https://zenodo.org/records/12345", "*.log", tmp_path, session=session)
+        == paths
+    )
     assert [url for url, _ in session.calls].count(url) == 1
+
+
+def test_fetch_zenodo_logs_reads_a_published_record_listing(tmp_path):
+    """A published record serves ``files`` as a list, not nested in ``entries``."""
+    content = (
+        HEADER + "@DATA,2023-01-01,12:00:00,0,400,10,20,1013,5000,00100,1,1,18,35,0,5\n"
+    ).encode("latin-1")
+    url = "https://zenodo.org/api/records/12345/files/a.log/content"
+    record = {
+        "files": [
+            {
+                "key": "a.log",
+                "size": len(content),
+                "checksum": f"md5:{hashlib.md5(content, usedforsecurity=False).hexdigest()}",
+                # A published entry names its content under ``self``, so the
+                # caller falls back to the conventional content URL.
+                "links": {"self": url},
+            },
+            {"key": "notes.txt", "size": 1, "links": {"self": "unused"}},
+        ]
+    }
+    session = FakeSession(record, {url: content})
+
+    paths = fetch_zenodo_logs("10.5281/zenodo.12345", "./*.log", tmp_path, session=session)
+
+    assert [path.name for path in paths] == ["a.log"]
+    assert paths[0].read_bytes() == content
 
 
 def test_fetch_zenodo_logs_rejects_unsafe_record_id(tmp_path):

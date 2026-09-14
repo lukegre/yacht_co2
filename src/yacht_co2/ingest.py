@@ -6,7 +6,7 @@ import fnmatch
 import glob
 import hashlib
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -18,6 +18,10 @@ from loguru import logger
 
 from .errors import ParseError, ZenodoError
 from .schema import QCFlag, attach_qc_metadata, validate_dataset
+
+# Shared with the upload client so both consumers read one Zenodo listing
+# shape, whichever serialization the record happens to use.
+from .zenodo import _file_entries
 
 ZENODO_URL = "https://zenodo.org"
 ZENODO_SANDBOX_URL = "https://sandbox.zenodo.org"
@@ -249,15 +253,18 @@ def fetch_zenodo_logs(
     except (requests.RequestException, ValueError) as exc:
         raise ZenodoError(f"could not read Zenodo repository {repository}: {exc}") from exc
 
-    entries = record.get("files", {}).get("entries", {})
-    if not isinstance(entries, dict):
+    # A published record serves ``files`` as a list of entries while a draft
+    # nests them under ``entries``, so the listing is normalised before use.
+    listing = record.get("files")
+    if listing is not None and not isinstance(listing, (Mapping, Sequence)):
         raise ZenodoError(f"Zenodo repository {repository} returned an invalid file listing")
     remote_pattern = pattern.removeprefix("./")
     selected = []
-    for key, entry in entries.items():
-        name = str(key)
-        if fnmatch.fnmatch(name, remote_pattern) or fnmatch.fnmatch(
-            Path(name).name, remote_pattern
+    for entry in _file_entries(listing):
+        name = str(entry.get("key") or "")
+        if name and (
+            fnmatch.fnmatch(name, remote_pattern)
+            or fnmatch.fnmatch(Path(name).name, remote_pattern)
         ):
             selected.append((name, entry))
     if not selected:

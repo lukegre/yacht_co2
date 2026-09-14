@@ -133,12 +133,9 @@ def process_all(
     manifest_path = build_manifest(config_path)
     manifest = load_manifest(manifest_path)
 
-    # A just-submitted record may still be awaiting community review and its
-    # reserved DOI may therefore not be public yet. Process the same local logs
-    # that were uploaded, while retaining the DOI in the persisted manifest.
-    local_inputs = dict(manifest.inputs)
-    local_inputs.pop("repository", None)
-    local_outputs = {
+    # Products are built from the archived record rather than the folder they
+    # were uploaded from, so what is published is provably what was processed.
+    outputs = {
         **manifest.outputs,
         "directory": str(folder),
         "formats": ["csv"],
@@ -146,13 +143,22 @@ def process_all(
         "single_html": False,
         "video": False,
     }
-    local_manifest = replace(manifest, inputs=local_inputs, outputs=local_outputs)
-    result = Pipeline(local_manifest).run(
-        enrich=False,
-        site=False,
-        video=False,
-        report=False,
-    )
+    run_manifest = replace(manifest, outputs=outputs)
+    try:
+        result = Pipeline(run_manifest).run(enrich=False, site=False, video=False, report=False)
+    except ZenodoError as exc:
+        # A just-submitted record is not public until a curator accepts it, so
+        # its files cannot be read back yet. The local logs are the ones that
+        # were uploaded, so they stand in until the record is available.
+        logger.warning("Could not read the archived record ({}); using the local logs", exc)
+        local_inputs = dict(manifest.inputs)
+        local_inputs.pop("repository", None)
+        result = Pipeline(replace(run_manifest, inputs=local_inputs)).run(
+            enrich=False,
+            site=False,
+            video=False,
+            report=False,
+        )
 
     site_path = folder / site_filename(campaign, campaign_date)
     result.artifacts["site"] = site_path

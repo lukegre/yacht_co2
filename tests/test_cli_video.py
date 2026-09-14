@@ -4,6 +4,7 @@ from loguru import logger
 from typer.testing import CliRunner
 
 from yacht_co2.cli import app
+from yacht_co2.errors import ZenodoError
 from yacht_co2.video import render_video
 
 
@@ -68,6 +69,13 @@ def test_cli_pipeline_uploads_and_builds_local_artifacts(tmp_path, monkeypatch):
         return {"status": "pending_review", "record_id": "12345"}
 
     monkeypatch.setattr("yacht_co2.cli.upload_raw_folder", fake_upload)
+    fetched = {}
+
+    def fake_fetch(repository, pattern, cache, **kwargs):
+        fetched.update(repository=repository, pattern=pattern)
+        return [tmp_path / "one.log"]
+
+    monkeypatch.setattr("yacht_co2.pipeline.fetch_zenodo_logs", fake_fetch)
 
     result = CliRunner().invoke(
         app,
@@ -82,6 +90,8 @@ def test_cli_pipeline_uploads_and_builds_local_artifacts(tmp_path, monkeypatch):
         "config": None,
         "publish": True,
     }
+    # The logs are read back from the archived record, not from the folder.
+    assert fetched == {"repository": "10.5281/zenodo.12345", "pattern": "./*.log"}
     assert (tmp_path / "manifest.yaml").is_file()
     assert (tmp_path / "track.csv").is_file()
     assert (tmp_path / "report.json").is_file()
@@ -114,6 +124,10 @@ def test_cli_pipeline_takes_its_campaign_from_a_config_elsewhere(tmp_path, monke
         return {"status": "pending_review", "record_id": "12345"}
 
     monkeypatch.setattr("yacht_co2.cli.upload_raw_folder", fake_upload)
+    monkeypatch.setattr(
+        "yacht_co2.pipeline.fetch_zenodo_logs",
+        lambda repository, pattern, cache, **kwargs: [folder / "one.log"],
+    )
 
     result = CliRunner().invoke(app, ["pipeline", "--config", str(config)])
 
@@ -134,6 +148,33 @@ def test_cli_pipeline_takes_its_campaign_from_a_config_elsewhere(tmp_path, monke
         in (folder / "route-du-rhum-2022-12.html").read_text()
     )
     assert not list(working.iterdir())
+
+
+def test_cli_pipeline_falls_back_to_local_logs_while_a_record_is_unreadable(tmp_path, monkeypatch):
+    """A record awaiting review is not public, so the uploaded logs stand in."""
+    (tmp_path / "one.log").write_text(
+        "@NAME,DATE,TIME,FRAC,CO2,H2O,CellTemp,CellPress,Latitude,Longitude,"
+        "AIN0_mA/Waterflow,FLOWgas,waterTemp,salinity,Status,STATUS\n"
+        "@DATA,2023-01-01,00:00:00,0,400,10,20,1013.25,5000,00200,1,1,20,35,0,5\n"
+    )
+    (tmp_path / "zenodo.yaml").write_text(
+        "campaign: Fastnet\ncampaign_date: 2023-06\ndoi: 10.5281/zenodo.12345\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("yacht_co2.cli.upload_raw_folder", lambda folder, **kwargs: {})
+
+    def refuse(repository, pattern, cache, **kwargs):
+        raise ZenodoError(f"could not read Zenodo repository {repository}: HTTP 404")
+
+    monkeypatch.setattr("yacht_co2.pipeline.fetch_zenodo_logs", refuse)
+
+    result = CliRunner().invoke(app, ["pipeline"])
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "track.csv").is_file()
+    assert (tmp_path / "fastnet-2023-06.html").is_file()
+    # The DOI stays in the manifest even though this run could not read it.
+    assert "10.5281/zenodo.12345" in (tmp_path / "manifest.yaml").read_text()
 
 
 def test_cli_pipeline_says_when_a_config_does_not_name_the_campaign(tmp_path, monkeypatch):
