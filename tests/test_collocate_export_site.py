@@ -98,6 +98,9 @@ def test_exports_and_site(tmp_path):
     assert "observations in chart window" in rendered
     assert "µatm" in rendered
     assert "spectralR" in rendered
+    # The map colour limits are clipped to the central 95% of QC-good values.
+    assert "MAP_CLIP=[.025,.975]" in rendered
+    assert "percentileRange(scaleValues,MAP_CLIP[0],MAP_CLIP[1])" in rendered
     assert "bindTooltip" in rendered
     assert "QC-good means every applicable check passes" in rendered
     assert "aria-describedby=qc-help" in rendered

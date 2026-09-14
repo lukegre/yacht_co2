@@ -18,6 +18,12 @@ main{display:grid;grid-template-columns:minmax(320px,1fr) minmax(320px,1fr);gap:
 SCRIPT = r"""
 const S=window.YACHT_DATA, R=window.YACHT_REPORT, q=x=>document.querySelector(x);
 const finite=x=>Number.isFinite(x), extent=a=>{const v=a.filter(finite);return v.length?[Math.min(...v),Math.max(...v)]:[0,1]};
+// Colour limits clipped to a central percentile range so a handful of extreme
+// values cannot flatten the scale the rest of the track is read against.
+const MAP_CLIP=[.025,.975];
+const percentileRange=(a,plo,phi)=>{const v=a.filter(finite).sort((x,y)=>x-y);if(!v.length)return [0,1];
+ const at=p=>{const idx=(v.length-1)*p,i=Math.floor(idx),f=idx-i;return i+1<v.length?v[i]+(v[i+1]-v[i])*f:v[i]};
+ const lo=at(plo),hi=at(phi);return hi>lo?[lo,hi]:[v[0],v[v.length-1]]};
 const spectralR=['#5e4fa2','#3288bd','#66c2a5','#abdda4','#e6f598','#ffffbf','#fee08b','#fdae61','#f46d43','#d53e4f','#9e0142'];
 function colorFor(value){const t=Math.min(1,Math.max(0,value))*(spectralR.length-1),i=Math.min(spectralR.length-2,Math.floor(t)),mix=t-i,a=spectralR[i].slice(1).match(/../g).map(x=>parseInt(x,16)),b=spectralR[i+1].slice(1).match(/../g).map(x=>parseInt(x,16));return `rgb(${a.map((v,j)=>Math.round(v+(b[j]-v)*mix)).join(',')})`}
 const lineColours=['#007f86','#d2604b','#6f5aa7','#bd8218','#3f78b5','#4f8a67','#b24f78','#526f78'];
@@ -80,9 +86,13 @@ function xValue(chart,i){return chart.x==='time'?timestamps[i]:chart.x==='lat'?S
 function focusedIndices(){const chart=charts.find(c=>c.id===activeRangeChartId);if(!chart||!chart.range)return null;const [lo,hi]=chart.range;return new Set(S.time.map((_,i)=>i).filter(i=>{const v=xValue(chart,i);return finite(v)&&v>=lo&&v<=hi}))}
 function trackTooltip(i,value){const el=document.createElement('div');el.className='track-tooltip';const primary=document.createElement('strong'),detail=document.createElement('span');primary.textContent=`${label(mapVariable)}: ${finite(value)?value.toFixed(2):'missing'}${unit(mapVariable)?' '+unit(mapVariable):''}`;detail.textContent=`${fmtTime(S.time[i]).replace('T',' ')} · ${S.lat[i].toFixed(4)}°, ${S.lon[i].toFixed(4)}°`;el.append(primary,detail);return el}
 function drawMap(){
- const keep=S.time.map((_,i)=>!q('#good').checked||good[i]),focus=focusedIndices(),values=S.data[mapVariable],scaleValues=values.filter((v,i)=>good[i]&&finite(v)),[lo,hi]=extent(scaleValues);
+ const keep=S.time.map((_,i)=>!q('#good').checked||good[i]),focus=focusedIndices(),values=S.data[mapVariable],scaleValues=values.filter((v,i)=>good[i]&&finite(v)),[lo,hi]=percentileRange(scaleValues,MAP_CLIP[0],MAP_CLIP[1]);
  if(trackLayer){trackLayer.clearLayers();const bounds=[];S.lon.forEach((lon,i)=>{if(!keep[i]||!finite(lon)||!finite(S.lat[i]))return;bounds.push([S.lat[i],lon]);const v=values[i],t=finite(v)?(v-lo)/(hi-lo||1):null,inFocus=!focus||focus.has(i),outside=focus&&!inFocus,marker=L.circleMarker([S.lat[i],lon],{radius:outside?2.2:3.3,weight:0,fillColor:outside?'#98a7ab':t===null?'#7d8c90':colorFor(t),fillOpacity:outside?.38:.92}).addTo(trackLayer);marker.bindTooltip(trackTooltip(i,v),{direction:'top',offset:[0,-4],opacity:.96})});if(bounds.length&&!mapHasFit){map.fitBounds(L.latLngBounds(bounds),{padding:[18,18]});mapHasFit=true}}
- const count=focus?[...focus].filter(i=>keep[i]).length:null;q('#legend-title').textContent=`Track colour · ${label(mapVariable)}${unit(mapVariable)?` (${unit(mapVariable)})`:''}${count===null?'':` · ${count} observations in chart window`}`;q('#legend-min').textContent=finite(lo)?lo.toFixed(2):'—';q('#legend-max').textContent=finite(hi)?hi.toFixed(2):'—';
+ const count=focus?[...focus].filter(i=>keep[i]).length:null;q('#legend-title').textContent=`Track colour · ${label(mapVariable)}${unit(mapVariable)?` (${unit(mapVariable)})`:''}${count===null?'':` · ${count} observations in chart window`}`;
+ // Observations beyond the clipped limits keep the end colour, so the bound
+ // is marked as inclusive rather than read as the extreme of the data.
+ const [dataLo,dataHi]=extent(scaleValues);
+ q('#legend-min').textContent=finite(lo)?`${lo>dataLo?'≤ ':''}${lo.toFixed(2)}`:'—';q('#legend-max').textContent=finite(hi)?`${hi<dataHi?'≥ ':''}${hi.toFixed(2)}`:'—';
 }
 function seriesData(name,chart){
  const xs=[],ys=[],ids=[],values=S.data[name];
