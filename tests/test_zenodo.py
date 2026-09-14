@@ -298,6 +298,9 @@ class FakeClient:
             {"key": key, "checksum": f"md5:{checksum}"} for key, checksum in self.remote.items()
         ]
 
+    def delete_draft(self, record_id):
+        self.calls.append(("delete_draft", record_id))
+
     def delete_file(self, record_id, key):
         self.calls.append(("delete", key))
         self.remote.pop(key)
@@ -610,6 +613,73 @@ def test_vanished_record_reports_how_to_recover(tmp_path):
     with pytest.raises(ZenodoError, match="no longer exists") as error:
         upload_raw_folder(tmp_path, client=MissingClient())
     assert STATE_NAME in str(error.value)
+
+
+def test_unreadable_draft_is_discarded_and_versioned_again(tmp_path):
+    """A draft Zenodo can no longer serialize is deleted and branched afresh.
+
+    Such a draft answers every read with HTTP 500 and blocks new versions of
+    its concept, so the only way forward is to discard it and version the
+    parent again.
+    """
+    _write_config(tmp_path)
+    (tmp_path / "data.log").write_text("data")
+    (tmp_path / STATE_NAME).write_text(
+        json.dumps(
+            {
+                "record_id": "broken",
+                "parent_record_id": "published",
+                "sandbox": False,
+                "status": "draft",
+            }
+        )
+    )
+
+    class BrokenDraftClient(FakeClient):
+        def get_draft(self, record_id):
+            if record_id == "broken":
+                raise ZenodoError(
+                    "Zenodo GET /api/records/broken/draft: HTTP 500: internal error"
+                )
+            return super().get_draft(record_id)
+
+        def get_record(self, record_id):
+            if record_id == "broken":
+                raise ZenodoError("Zenodo GET /api/records/broken: HTTP 404: not registered")
+            return super().get_record(record_id)
+
+        def create_new_version(self, record_id):
+            self.calls.append(("new_version", record_id))
+            return self._record("fresh-draft")
+
+    fake = BrokenDraftClient()
+    result = upload_raw_folder(tmp_path, client=fake)
+
+    assert ("delete_draft", "broken") in fake.calls
+    # Versioning the parent needs no --new-version: the draft this run meant to
+    # write to no longer exists.
+    assert ("new_version", "published") in fake.calls
+    assert result["record_id"] == "fresh-draft"
+    assert ("upload", "data.log") in fake.calls
+    state = json.loads((tmp_path / STATE_NAME).read_text())
+    assert "parent_record_id" not in state or state["parent_record_id"] == "published"
+
+
+def test_a_new_version_draft_records_its_parent(tmp_path):
+    _write_config(tmp_path)
+    (tmp_path / "data.log").write_text("data")
+
+    class PublishedClient(FakeClient):
+        def get_draft(self, record_id):
+            if record_id == "published":
+                raise ZenodoError("HTTP 404")
+            return super().get_draft(record_id)
+
+    upload_raw_folder(
+        tmp_path, client=PublishedClient(), record_id="published", new_version=True
+    )
+    state = json.loads((tmp_path / STATE_NAME).read_text())
+    assert state["parent_record_id"] == "published"
 
 
 def test_remote_only_blocks_review_or_is_pruned(tmp_path):

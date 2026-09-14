@@ -97,30 +97,40 @@ def derive_pco2(ds: xr.Dataset, config: Mapping[str, Any] | None = None) -> xr.D
 
     Water vapour is expected in mmol/mol (the OceanPack ``H2O``/ppt field).
     The dry mole fraction is multiplied by dry equilibrator pressure before the
-    Takahashi (1993) exponential temperature correction is applied.
+    Takahashi (1993) exponential temperature correction is applied. Configure
+    ``water_temperature`` with the water temperature at equilibration, never
+    the gas analyzer's heated optical-cell temperature. If it is omitted, the
+    sea-temperature field is used and the correction is unity.
     """
     config = dict(config or {})
     result = ds.copy()
     wet = _values(result, "xco2_wet")
     h2o = _values(result, str(config.get("h2o", "h2o"))).astype(float)
     pressure = _values(result, str(config.get("pressure", "cellpress"))).astype(float)
-    equ_temp = _values(result, str(config.get("equilibrator_temperature", "celltemp"))).astype(
-        float
-    )
     sea_temp = _values(result, str(config.get("sea_temperature", "watertemp"))).astype(float)
+    water_temperature = config.get(
+        "water_temperature",
+        config.get("equilibrator_temperature"),  # compatibility with older manifests
+    )
+    equ_temp = (
+        sea_temp
+        if water_temperature is None
+        else _values(result, str(water_temperature)).astype(float)
+    )
+    temperature_coefficient = float(config.get("temperature_coefficient", 0.0423))
     vapour_fraction = h2o / float(config.get("h2o_scale", 1000.0))
     xdry = wet / (1.0 - vapour_fraction)
     dry_pressure = pressure * (1.0 - vapour_fraction)
     p_equ = xdry * dry_pressure / 1013.25
-    p_sea = p_equ * np.exp(
-        float(config.get("temperature_coefficient", 0.0423)) * (sea_temp - equ_temp)
-    )
+    p_sea = p_equ * np.exp(temperature_coefficient * (sea_temp - equ_temp))
     result["xco2_dry"] = xdry
     result["pco2_equilibrator"] = p_equ
     result["pco2_seawater"] = p_sea
     for name in ("xco2_dry", "pco2_equilibrator", "pco2_seawater"):
         result[name].attrs["units"] = "uatm" if name.startswith("pco2") else "umol mol-1"
-    result.pco2_seawater.attrs["temperature_correction"] = "exp(0.0423 * (T_sea - T_equ))"
+    result.pco2_seawater.attrs["temperature_correction"] = (
+        f"exp({temperature_coefficient:g} * (T_sea - T_equ_water))"
+    )
     return result
 
 

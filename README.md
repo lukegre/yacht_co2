@@ -1,6 +1,6 @@
 # yacht-co2
 
-Turns SubCtech OceanPack expedition logs into traceable xarray datasets, with
+Turns SubCtech OceanPack campaign logs into traceable xarray datasets, with
 optional environmental enrichment, scientific exports, a static website, and
 synchronized MP4 video. Every raw observation is preserved; quality control is
 represented by flags rather than destructive filtering.
@@ -13,28 +13,52 @@ uv run yacht-co2 validate examples/fastnet.yaml
 uv run yacht-co2 run examples/fastnet.yaml --no-enrich
 ```
 
+To run a new raw-data folder end to end, invoke the pipeline from that folder:
+
+```console
+uv run yacht-co2 pipeline --campaign "Fastnet Race" --campaign-date 2023-07-24
+```
+
+This uploads the folder using the normal Zenodo defaults, creates
+`manifest.yaml` from `zenodo.yaml`, processes the local logs to `track.csv`,
+writes `report.json` and `REPORT.md`, and creates a single-file
+`fastnet-race-2023-07-24.html` — `<campaign>-<campaign date>.html`, slugified —
+named in the page as `Fastnet Race (2023-07-24)`. An already-published Zenodo
+record is left untouched: the upload is skipped and the local products are
+still built against its DOI.
+
 Writes NetCDF, Zarr v2, CSV, hosted-site, single-HTML and run-report artifacts
 under `outputs/fastnet/`. Set `outputs.video: true` to render video (needs
 FFmpeg on `PATH`).
 
 ## Manifest
 
-Scientific processing needs an `expedition.yaml`; the raw readers
-(`read_log_file`, `read_expedition`) work without one. Paths are relative to the
+Scientific processing needs a `manifest.yaml`; the raw readers
+(`read_log_file`, `read_campaign`) work without one. Paths are relative to the
 manifest.
 
+Build one beside an existing `zenodo.yaml`; `campaign.name` comes from its
+campaign (or explicit title), while `campaign.id` comes from its slug or the
+data-folder name. The remaining values come from `examples/defaults.yaml`:
+
+```console
+uv run yacht-co2 build-manifest data/2306_fastnet/zenodo.yaml
+```
+
 ```yaml
-expedition:
+campaign:
+  id: fastnet-2023
   name: Fastnet 2023
 inputs:
-  logs: ../data/2306_fastnet/*.log
+  repository: 10.5281/zenodo.12345 # omit to read from the local filesystem
+  logs: ./*.log
   timezone: UTC
 calibration:
   method: instrument          # or: linear
 equilibrator:
   h2o: h2o
   pressure: cellpress
-  equilibrator_temperature: celltemp
+  water_temperature: watertemp # water at the equilibrator, never LI-850 CellTemp
   sea_temperature: watertemp
 qc:
   analysis_phases: [5]
@@ -51,6 +75,11 @@ outputs:
   site: true
   single_html: true
 ```
+
+When `inputs.repository` is set to a Zenodo DOI, record URL, API URL, or record
+ID, `inputs.logs` selects files in that record instead of the local filesystem.
+Downloads are cached below `outputs.cache`. `build-manifest` uses the `doi` in
+`zenodo.yaml` as the default repository and fails clearly if no DOI is present.
 
 ### Enrichment products
 
@@ -108,21 +137,21 @@ per observation.
 ## Python API
 
 ```python
-from yacht_co2 import Pipeline, read_expedition
+from yacht_co2 import Pipeline, read_campaign
 
-raw = read_expedition("data/2306_fastnet")
+raw = read_campaign("data/2306_fastnet")
 result = Pipeline("examples/fastnet.yaml").run(enrich=False)
 print(result.dataset, result.artifacts)
 ```
 
-Stages are also callable individually: `read_log_file`, `read_expedition`,
+Stages are also callable individually: `read_log_file`, `read_campaign`,
 `apply_qc`, `calibrate_co2`, `derive_pco2`, `derive_fco2`, `fetch_products`,
 `collocate_track`, `resolve_air_co2`, `derive_flux`, `export_dataset`,
 `build_site`, `render_video`, `load_platform`, `summarise`, `write_report`.
 
 ## Run report
 
-Every run writes `report.json` and `REPORT.md`: expedition and platform
+Every run writes `report.json` and `REPORT.md`: campaign and platform
 identity, temporal/spatial extent, sampling statistics (median interval, gaps
 ≥5 min, coverage), per-QC-bit and per-file record counts, a variable inventory
 over QC-good records, product fetch statuses, and the manifest/code hashes.
@@ -135,11 +164,11 @@ uv run yacht-co2 report outputs/fastnet/track.nc \
 ```
 
 The manifest is optional; without it the platform section falls back to the
-dataset's `expedition` attribute.
+dataset's `campaign` attribute.
 
 ## Project defaults
 
-One `project.yaml` holds everything shared across expeditions, one block per
+One `project.yaml` holds everything shared across campaigns, one block per
 consumer — `platform:` for the run report, `zenodo:` for archival metadata:
 
 ```yaml
@@ -158,10 +187,9 @@ zenodo:
 Resolution: `config_directories(start)` climbs from `start` to the repository
 root (stopping at `.git`), and every `project.yaml` found is deep-merged
 root-first, so a nested file refines the one above it. Nearer configuration then
-wins — an expedition manifest for `platform:`, a data folder's `zenodo.yaml` for
+wins — a campaign manifest for `platform:`, a data folder's `zenodo.yaml` for
 `zenodo:`. `platform` keys are reported verbatim, so add or rename them freely;
-per-expedition fields such as `id` and `race_name` belong in a manifest's
-`expedition:` block.
+  per-campaign identity is the manifest's `campaign.id` and `campaign.name`.
 
 `YACHT_CO2_PROJECT_CONFIG` (exported, or set in a `.env` anywhere up to the
 repository root) points at a project configuration outside the repository.
@@ -174,7 +202,7 @@ mappings, ranking below a `zenodo:` block in the same directory.
 ## Validating configuration
 
 `yacht-co2 validate` checks the project configuration and, when given one, an
-expedition manifest — before any data is read, reporting every problem at once:
+campaign manifest — before any data is read, reporting every problem at once:
 
 ```console
 uv run yacht-co2 validate examples/fastnet.yaml
@@ -330,7 +358,7 @@ contain gridded products.
 ## Legacy migration
 
 Code under `docs/legacy_code` is reference-only and never imported at runtime.
-`read_mflog` maps to `read_expedition`, with its dataframe columns now appearing
+`read_mflog` maps to `read_campaign`, with its dataframe columns now appearing
 as xarray `raw_*` variables. Replace legacy row filtering with
 `apply_qc(...).where(ds.qc_good)` so rejected data remain inspectable.
 

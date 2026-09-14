@@ -2,19 +2,27 @@
 
 from __future__ import annotations
 
+import fnmatch
 import glob
 import hashlib
 import re
 from collections.abc import Iterable
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 import numpy as np
 import pandas as pd
+import requests
 import xarray as xr
 from loguru import logger
 
-from .errors import ParseError
+from .errors import ParseError, ZenodoError
 from .schema import QCFlag, attach_qc_metadata, validate_dataset
+
+ZENODO_URL = "https://zenodo.org"
+ZENODO_SANDBOX_URL = "https://sandbox.zenodo.org"
+_ZENODO_DOI_RE = re.compile(r"^10\.(?P<prefix>5281|5072)/zenodo\.(?P<record>[^/?#]+)$", re.I)
+_ZENODO_RECORD_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 def _safe_name(value: str) -> str:
@@ -161,10 +169,166 @@ def _resolve_logs(source: str | Path | Iterable[str | Path]) -> list[Path]:
     return sorted((path.resolve() for path in paths), key=lambda item: str(item))
 
 
-def read_expedition(
+def _zenodo_record(repository: str) -> tuple[str, str]:
+    """Return the API origin and record id named by a Zenodo reference."""
+    reference = repository.strip().rstrip("/")
+    if not reference:
+        raise ZenodoError("inputs.repository must name a Zenodo record")
+    parsed = urlparse(reference)
+    if parsed.scheme:
+        if parsed.scheme not in {"http", "https"}:
+            raise ZenodoError(f"unsupported Zenodo repository URL: {repository}")
+        host = parsed.netloc.lower()
+        if host == "doi.org":
+            reference = unquote(parsed.path.lstrip("/"))
+        elif host in {"zenodo.org", "www.zenodo.org", "sandbox.zenodo.org"}:
+            match = re.search(r"/(?:api/)?records/([^/]+)$", parsed.path.rstrip("/"))
+            if not match:
+                raise ZenodoError(f"Zenodo repository URL has no record id: {repository}")
+            origin = ZENODO_SANDBOX_URL if host.startswith("sandbox.") else ZENODO_URL
+            record_id = unquote(match.group(1))
+            if not _ZENODO_RECORD_RE.fullmatch(record_id) or record_id in {".", ".."}:
+                raise ZenodoError(f"invalid Zenodo record id: {record_id!r}")
+            return origin, record_id
+        else:
+            raise ZenodoError(f"repository is not a Zenodo URL: {repository}")
+    doi = _ZENODO_DOI_RE.fullmatch(reference.removeprefix("doi:"))
+    if doi:
+        origin = ZENODO_SANDBOX_URL if doi.group("prefix") == "5072" else ZENODO_URL
+        record_id = doi.group("record")
+        if not _ZENODO_RECORD_RE.fullmatch(record_id):
+            raise ZenodoError(f"invalid Zenodo record id: {record_id!r}")
+        return origin, record_id
+    if _ZENODO_RECORD_RE.fullmatch(reference) and reference not in {".", ".."}:
+        return ZENODO_URL, reference
+    raise ZenodoError(f"invalid Zenodo repository reference: {repository}")
+
+
+def _zenodo_file_matches(path: Path, entry: object) -> bool:
+    """Check a cached file against the size and checksum published by Zenodo."""
+    if not path.is_file() or not isinstance(entry, dict):
+        return False
+    size = entry.get("size")
+    if size is not None and path.stat().st_size != int(size):
+        return False
+    checksum = str(entry.get("checksum") or "")
+    if not checksum:
+        return size is not None
+    algorithm, separator, expected = checksum.partition(":")
+    if not separator or algorithm.lower() not in {"md5", "sha256"}:
+        return False
+    digest = hashlib.new(algorithm.lower(), usedforsecurity=False)
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest().lower() == expected.lower()
+
+
+def fetch_zenodo_logs(
+    repository: str,
+    pattern: str,
+    cache_dir: str | Path,
+    *,
+    session: requests.Session | None = None,
+) -> list[Path]:
+    """Download the log files selected from a public Zenodo record.
+
+    Downloads are kept under a record-specific cache directory and reused when
+    their Zenodo-reported size and checksum still match. The returned list
+    contains only files present in the current record, so removed remote files
+    cannot leak into later campaign runs through the cache.
+    """
+    origin, record_id = _zenodo_record(repository)
+    client = session or requests.Session()
+    record_url = f"{origin}/api/records/{record_id}"
+    logger.info("Reading Zenodo record {}", record_url)
+    try:
+        response = client.get(record_url, timeout=60)
+        response.raise_for_status()
+        record = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise ZenodoError(f"could not read Zenodo repository {repository}: {exc}") from exc
+
+    entries = record.get("files", {}).get("entries", {})
+    if not isinstance(entries, dict):
+        raise ZenodoError(f"Zenodo repository {repository} returned an invalid file listing")
+    remote_pattern = pattern.removeprefix("./")
+    selected = []
+    for key, entry in entries.items():
+        name = str(key)
+        if fnmatch.fnmatch(name, remote_pattern) or fnmatch.fnmatch(
+            Path(name).name, remote_pattern
+        ):
+            selected.append((name, entry))
+    if not selected:
+        raise FileNotFoundError(f"no Zenodo files match {pattern!r} in {repository}")
+
+    destination = Path(cache_dir).resolve() / "zenodo" / record_id
+    destination.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    for key, entry in sorted(selected):
+        if Path(key).name != key:
+            raise ZenodoError(f"Zenodo log key must be a plain filename: {key!r}")
+        target = destination / key
+        size = entry.get("size") if isinstance(entry, dict) else None
+        if _zenodo_file_matches(target, entry):
+            logger.info("Using cached Zenodo file {}", target)
+            paths.append(target)
+            continue
+        content_url = entry.get("links", {}).get("content") if isinstance(entry, dict) else None
+        if not content_url:
+            content_url = f"{record_url}/files/{key}/content"
+        temporary = target.with_suffix(target.suffix + ".part")
+        try:
+            with client.get(str(content_url), stream=True, timeout=120) as download:
+                download.raise_for_status()
+                with temporary.open("wb") as stream:
+                    for chunk in download.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            stream.write(chunk)
+            if size is not None and temporary.stat().st_size != int(size):
+                raise ZenodoError(
+                    f"Zenodo file {key} has {temporary.stat().st_size} bytes; expected {size}"
+                )
+            if not _zenodo_file_matches(temporary, entry):
+                raise ZenodoError(f"Zenodo file {key} failed checksum verification")
+            temporary.replace(target)
+        except ZenodoError:
+            temporary.unlink(missing_ok=True)
+            raise
+        except (requests.RequestException, OSError) as exc:
+            temporary.unlink(missing_ok=True)
+            raise ZenodoError(f"could not download Zenodo file {key}: {exc}") from exc
+        logger.info("Downloaded Zenodo file {}", target)
+        paths.append(target)
+    return paths
+
+
+def _normalise_raw_object_variables(ds: xr.Dataset) -> list[str]:
+    """Make raw fields with cross-file type drift safe for serialization.
+
+    A field can be numeric in one log and contain a textual missing-value
+    marker in another. Xarray represents the merged values as ``object``,
+    which NetCDF cannot encode. Text is the lossless common representation;
+    canonical numeric variables are derived separately during ingestion.
+    """
+    promoted: list[str] = []
+    for name, variable in ds.data_vars.items():
+        if not name.startswith("raw_") or variable.dtype.kind != "O":
+            continue
+        values = np.asarray(
+            ["" if pd.isna(value) else str(value) for value in variable.values.ravel()],
+            dtype=str,
+        ).reshape(variable.shape)
+        ds[name] = xr.DataArray(values, dims=variable.dims, attrs=variable.attrs)
+        promoted.append(name)
+    return promoted
+
+
+def read_campaign(
     source: str | Path | Iterable[str | Path], *, timezone: str = "UTC"
 ) -> xr.Dataset:
-    """Read and deterministically merge all logs in an expedition."""
+    """Read and deterministically merge all logs in a campaign."""
     paths = _resolve_logs(source)
     if not paths:
         raise FileNotFoundError(f"no .log files found in {source}")
@@ -173,12 +337,18 @@ def read_expedition(
         raise FileNotFoundError(missing[0])
     datasets = [read_log_file(path, timezone=timezone) for path in paths]
     merged = xr.concat(datasets, dim="time", join="outer", compat="no_conflicts")
+    promoted = _normalise_raw_object_variables(merged)
+    if promoted:
+        logger.warning(
+            "Preserving raw fields with inconsistent cross-file types as text: {}",
+            ", ".join(promoted),
+        )
     order = np.argsort(merged.time.values, kind="stable")
     merged = merged.isel(time=order)
     valid_time = ~pd.isna(merged.time.values)
     duplicates = int(pd.Index(merged.time.values[valid_time]).duplicated(keep=False).sum())
     merged.attrs.update(
-        expedition_source=str(Path(paths[0]).parent),
+        campaign_source=str(Path(paths[0]).parent),
         source_file_count=len(paths),
         duplicate_timestamp_rows=duplicates,
         processing_history="ingest; stable merge by UTC time, source path, source line",
@@ -189,3 +359,6 @@ def read_expedition(
     validate_dataset(merged)
     logger.success("Merged {} logs into {} observations", len(paths), merged.sizes["time"])
     return merged
+
+
+read_expedition = read_campaign

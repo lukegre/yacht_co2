@@ -23,7 +23,8 @@ def dataset():
             "qc_flag": ("time", np.zeros(2, dtype="uint16")),
             "raw_co2": ("time", [400.0, 410.0]),
             "raw_h2o": ("time", [10.0, 10.0]),
-            "raw_celltemp": ("time", [20.0, 21.0]),
+            "raw_celltemp": ("time", [51.5, 51.5]),
+            "raw_equilibrator_water_temp": ("time", [20.0, 21.0]),
             "raw_cellpress": ("time", [1013.25, 1013.25]),
             "raw_watertemp": ("time", [20.0, 22.0]),
             "raw_salinity": ("time", [35.0, 35.0]),
@@ -40,8 +41,17 @@ def test_processing_algebra_and_unity_temperature_correction():
     assert ds.xco2_dry[0] == pytest.approx(400 / 0.99, rel=1e-12)
     # drying and dry pressure cancel when cell pressure is standard pressure
     assert ds.pco2_seawater[0] == pytest.approx(400, rel=1e-12)
-    assert ds.pco2_seawater[1] == pytest.approx(410 * np.exp(0.0423), rel=1e-12)
+    assert ds.pco2_seawater[1] == pytest.approx(410, rel=1e-12)
     assert fugacity_factor(20) == pytest.approx(0.9966526904398437, rel=1e-12)
+
+
+def test_temperature_correction_uses_equilibrator_water_temperature():
+    ds = derive_pco2(
+        calibrate_co2(dataset()),
+        {"water_temperature": "equilibrator_water_temp"},
+    )
+    assert ds.pco2_seawater[0] == pytest.approx(400, rel=1e-12)
+    assert ds.pco2_seawater[1] == pytest.approx(410 * np.exp(0.0423), rel=1e-12)
 
 
 def test_linear_calibration_and_qc_bits():

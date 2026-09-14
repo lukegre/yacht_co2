@@ -1,4 +1,4 @@
-"""Expedition manifest loading and validation."""
+"""Campaign manifest loading, generation, and validation."""
 
 from __future__ import annotations
 
@@ -9,17 +9,22 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from loguru import logger
 
 from .errors import ManifestError
+from .project import read_yaml
 from .validation import Finding, errors, validate_manifest_document
+
+MANIFEST_NAME = "manifest.yaml"
+DEFAULTS_PATH = Path(__file__).resolve().parents[2] / "examples" / "defaults.yaml"
 
 
 @dataclass(frozen=True)
-class ExpeditionManifest:
-    """Validated, immutable view of ``expedition.yaml``."""
+class CampaignManifest:
+    """Validated, immutable view of a campaign manifest."""
 
     path: Path
-    expedition: dict[str, Any]
+    campaign: dict[str, Any]
     inputs: dict[str, Any]
     columns: dict[str, str] = field(default_factory=dict)
     phases: dict[str, Any] = field(default_factory=dict)
@@ -34,12 +39,24 @@ class ExpeditionManifest:
 
     @property
     def name(self) -> str:
-        return str(self.expedition["name"])
+        return str(self.campaign["name"])
+
+    @property
+    def expedition(self) -> dict[str, Any]:
+        """Compatibility alias for callers using the former terminology."""
+        return self.campaign
 
     @property
     def digest(self) -> str:
         canonical = json.dumps(self.raw, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode()).hexdigest()
+
+    def resolve_path(self, value: str | Path) -> Path:
+        """Resolve a manifest path relative to the manifest's directory."""
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = self.path.parent / path
+        return path.resolve()
 
 
 def check_manifest(path: str | Path) -> tuple[dict[str, Any], list[Finding]]:
@@ -59,17 +76,20 @@ def check_manifest(path: str | Path) -> tuple[dict[str, Any], list[Finding]]:
     return (raw if isinstance(raw, dict) else {}), validate_manifest_document(raw, path)
 
 
-def load_manifest(path: str | Path) -> ExpeditionManifest:
-    """Load an expedition manifest, refusing one that cannot produce a run."""
+ExpeditionManifest = CampaignManifest
+
+
+def load_manifest(path: str | Path) -> CampaignManifest:
+    """Load a campaign manifest, refusing one that cannot produce a run."""
     path = Path(path).resolve()
     raw, findings = check_manifest(path)
     fatal = errors(findings)
     if fatal:
         detail = "; ".join(f"{finding.where}: {finding.message}" for finding in fatal)
         raise ManifestError(f"invalid manifest {path}: {detail}")
-    return ExpeditionManifest(
+    return CampaignManifest(
         path=path,
-        expedition=raw["expedition"],
+        campaign=raw.get("campaign", raw.get("expedition", {})),
         inputs=raw["inputs"],
         columns=raw.get("columns", {}),
         phases=raw.get("phases", {}),
@@ -82,3 +102,66 @@ def load_manifest(path: str | Path) -> ExpeditionManifest:
         outputs=raw.get("outputs", {}),
         raw=raw,
     )
+
+
+def build_manifest(
+    zenodo: str | Path,
+    output: str | Path | None = None,
+    *,
+    defaults: str | Path | None = None,
+) -> Path:
+    """Build a processing manifest from a folder's ``zenodo.yaml``.
+
+    The generated manifest inherits processing values from
+    ``examples/defaults.yaml``. The campaign ID follows Zenodo's slug rule: an
+    explicit slug wins, otherwise the data-folder name is used. A Zenodo
+    campaign is preferred as the concise name; an explicit title is accepted
+    as a fallback.
+    """
+    zenodo_path = Path(zenodo).resolve()
+    if not zenodo_path.is_file():
+        raise ManifestError(f"Zenodo configuration does not exist: {zenodo_path}")
+    defaults_path = Path(defaults).resolve() if defaults is not None else DEFAULTS_PATH
+    if not defaults_path.is_file():
+        raise ManifestError(f"manifest defaults do not exist: {defaults_path}")
+
+    logger.info("Building campaign manifest from {}", zenodo_path)
+    zenodo_document = read_yaml(zenodo_path)
+    logger.info("Loading manifest defaults from {}", defaults_path)
+    template = read_yaml(defaults_path)
+    name = str(zenodo_document.get("campaign") or zenodo_document.get("title") or "").strip()
+    if not name:
+        raise ManifestError(
+            f"{zenodo_path} needs campaign or title to supply campaign.name"
+        )
+
+    campaign_id = str(zenodo_document.get("slug") or zenodo_path.parent.name).strip()
+    if not campaign_id or any(character.isspace() for character in campaign_id):
+        raise ManifestError(f"invalid campaign id derived from Zenodo slug: {campaign_id!r}")
+    logger.info("Resolved campaign id {!r} and name {!r}", campaign_id, name)
+
+    repository = str(zenodo_document.get("doi") or "").strip()
+    if not repository:
+        raise ManifestError(
+            f"{zenodo_path} needs doi to supply the default inputs.repository"
+        )
+
+    document = dict(template)
+    document["campaign"] = {"id": campaign_id, "name": name}
+    document["inputs"] = {**document.get("inputs", {}), "repository": repository}
+    document.pop("expedition", None)
+    destination = Path(output).resolve() if output is not None else zenodo_path.with_name(MANIFEST_NAME)
+    if destination.exists():
+        raise ManifestError(f"manifest already exists: {destination}")
+
+    findings = validate_manifest_document(document, destination)
+    fatal = errors(findings)
+    if fatal:
+        detail = "; ".join(f"{finding.where}: {finding.message}" for finding in fatal)
+        raise ManifestError(f"invalid manifest defaults {defaults_path}: {detail}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        yaml.safe_dump(document, sort_keys=False, allow_unicode=True), encoding="utf-8"
+    )
+    logger.success("Built campaign manifest {}", destination)
+    return destination

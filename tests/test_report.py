@@ -3,6 +3,7 @@ import json
 import numpy as np
 import pytest
 import xarray as xr
+from loguru import logger
 
 from yacht_co2.manifest import load_manifest
 from yacht_co2.report import render_markdown, summarise, write_report
@@ -34,7 +35,7 @@ def dataset(n=6):
             "raw_co2": ("time", np.full(n, 390.0)),
         },
         coords={"time": time},
-        attrs={"schema_version": "1.0.0", "code_sha256": "abc", "expedition": "Fastnet 2023"},
+        attrs={"schema_version": "1.0.0", "code_sha256": "abc", "campaign": "Fastnet 2023"},
     )
 
 
@@ -101,14 +102,14 @@ def test_variable_ranges_exclude_qc_flagged_records():
 def test_platform_defaults_fill_the_identity_table():
     summary = summarise(dataset(), platform={"vessel_name": "YOROSHIKU", "co2_sensor": "LI850"})
 
-    assert summary["expedition"]["vessel_name"] == "YOROSHIKU"
+    assert summary["campaign"]["vessel_name"] == "YOROSHIKU"
     assert "| vessel_name | YOROSHIKU |" in render_markdown(summary)
 
 
 def test_manifest_overrides_a_platform_default(tmp_path):
-    path = tmp_path / "expedition.yaml"
+    path = tmp_path / "manifest.yaml"
     path.write_text(
-        "expedition:\n  name: Fastnet 2023\n  co2_sensor: LI7815\ninputs:\n  logs: '*.log'\n"
+        "campaign:\n  name: Fastnet 2023\n  co2_sensor: LI7815\ninputs:\n  logs: '*.log'\n"
     )
     manifest = load_manifest(path)
 
@@ -118,8 +119,8 @@ def test_manifest_overrides_a_platform_default(tmp_path):
         platform={"vessel_name": "YOROSHIKU", "co2_sensor": "LI850"},
     )
 
-    assert summary["expedition"]["co2_sensor"] == "LI7815"
-    assert summary["expedition"]["vessel_name"] == "YOROSHIKU"
+    assert summary["campaign"]["co2_sensor"] == "LI7815"
+    assert summary["campaign"]["vessel_name"] == "YOROSHIKU"
 
 
 def test_summary_is_json_serialisable_without_numpy_scalars():
@@ -131,13 +132,22 @@ def test_summary_is_json_serialisable_without_numpy_scalars():
 def test_write_report_emits_both_renderings(tmp_path):
     summary = summarise(dataset())
 
-    paths = write_report(summary, tmp_path)
+    messages = []
+    sink_id = logger.add(lambda message: messages.append(message.record["message"]))
+    try:
+        paths = write_report(summary, tmp_path)
+    finally:
+        logger.remove(sink_id)
 
     assert json.loads(paths["report_json"].read_text())["quality"]["good_records"] == 4
     markdown = paths["report_markdown"].read_text()
     assert markdown.startswith("# Fastnet 2023")
     assert "## Quality control" in markdown
     assert "physical_range" in markdown
+    assert messages == [
+        f"Wrote JSON report to {tmp_path / 'report.json'}",
+        f"Wrote Markdown report to {tmp_path / 'REPORT.md'}",
+    ]
 
 
 def test_markdown_handles_a_clean_dataset_with_no_flags():

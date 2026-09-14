@@ -24,6 +24,7 @@ EXPORT_FORMATS = frozenset({"netcdf", "nc", "zarr", "zarr2", "csv"})
 MANIFEST_SECTIONS = frozenset(
     {
         "expedition",
+        "campaign",
         "inputs",
         "columns",
         "phases",
@@ -40,7 +41,9 @@ MANIFEST_SECTIONS = frozenset(
 # reported as unread rather than as an error: it changes nothing today, but it
 # is almost always a misspelling of one that would.
 SECTION_KEYS: dict[str, frozenset[str]] = {
-    "inputs": frozenset({"logs", "timezone"}),
+    "campaign": frozenset({"id", "name"}),
+    "expedition": frozenset({"id", "name"}),
+    "inputs": frozenset({"logs", "repository", "timezone"}),
     "phases": frozenset({"analysis", "air"}),
     "calibration": frozenset(
         {
@@ -59,6 +62,7 @@ SECTION_KEYS: dict[str, frozenset[str]] = {
             "h2o",
             "h2o_scale",
             "pressure",
+            "water_temperature",
             "equilibrator_temperature",
             "sea_temperature",
             "temperature_coefficient",
@@ -176,7 +180,7 @@ def _check_inputs(check: _Checker, manifest: Mapping[str, Any], path: Path) -> N
         check.error("inputs.logs", "is required")
     elif not isinstance(logs, str):
         check.error("inputs.logs", "must be a glob or path string")
-    else:
+    elif not inputs.get("repository"):
         # Globs resolve against the manifest's own directory, as the pipeline
         # resolves them, so a manifest can be checked from anywhere.
         pattern = Path(logs)
@@ -187,6 +191,7 @@ def _check_inputs(check: _Checker, manifest: Mapping[str, Any], path: Path) -> N
         )
         if not matches:
             check.warn("inputs.logs", f"matches no files: {logs}")
+    check.string(inputs.get("repository"), "inputs.repository")
     check.string(inputs.get("timezone"), "inputs.timezone")
 
 
@@ -247,7 +252,7 @@ def _check_outputs(check: _Checker, manifest: Mapping[str, Any]) -> None:
 
 
 def validate_manifest_document(raw: Any, path: str | Path) -> list[Finding]:
-    """Check one expedition manifest, returning every problem found."""
+    """Check one campaign manifest, returning every problem found."""
     path = Path(path)
     check = _Checker()
     if not isinstance(raw, Mapping):
@@ -257,11 +262,21 @@ def validate_manifest_document(raw: Any, path: str | Path) -> list[Finding]:
         if isinstance(raw.get(section), Mapping):
             check.unknown_keys(raw[section], known, section)
 
-    expedition = check.mapping(raw.get("expedition"), "expedition")
-    if not raw.get("expedition"):
-        check.error("expedition", "is required and must contain a name")
-    elif not expedition.get("name"):
-        check.error("expedition.name", "is required")
+    campaign_value = raw.get("campaign")
+    legacy_value = raw.get("expedition")
+    if campaign_value is not None and legacy_value is not None:
+        check.error("campaign", "cannot be combined with the legacy expedition section")
+    identity_value = campaign_value if campaign_value is not None else legacy_value
+    identity_name = "campaign" if campaign_value is not None else "expedition"
+    campaign = check.mapping(identity_value, identity_name)
+    if legacy_value is not None:
+        check.warn("expedition", "is deprecated; rename this section to campaign")
+    if not identity_value:
+        check.error("campaign", "is required and must contain a name")
+    else:
+        check.string(campaign.get("id"), f"{identity_name}.id")
+        if not campaign.get("name"):
+            check.error(f"{identity_name}.name", "is required")
     _check_inputs(check, raw, path)
 
     columns = check.mapping(raw.get("columns"), "columns")
@@ -275,6 +290,11 @@ def validate_manifest_document(raw: Any, path: str | Path) -> list[Finding]:
     _check_calibration(check, raw)
 
     equilibrator = check.mapping(raw.get("equilibrator"), "equilibrator")
+    if "equilibrator_temperature" in equilibrator:
+        check.warn(
+            "equilibrator.equilibrator_temperature",
+            "is deprecated; use equilibrator.water_temperature",
+        )
     for key, value in equilibrator.items():
         if key in {"h2o_scale", "temperature_coefficient"}:
             check.number(value, f"equilibrator.{key}")

@@ -68,11 +68,53 @@ def test_air_priority():
 def test_exports_and_site(tmp_path):
     ds = track()
     ds["value"] = ("time", [1.0, np.nan])
+    ds["value"].attrs["units"] = "uatm"
+    ds["raw_watertemp"] = ("time", [12.0, 13.0])
+    ds["raw_salinity"] = ("time", [34.8, 34.9])
+    ds["raw_chl_a"] = ("time", [0.7, 0.8])
+    ds["dissolved_oxygen"] = xr.DataArray(
+        [250.0, 251.0], dims=("time",), attrs={"units": "umol kg-1"}
+    )
     paths = export_dataset(ds, tmp_path, ["netcdf", "zarr", "csv"])
     assert all(path.exists() for path in paths.values())
-    html = build_site(ds, tmp_path / "single.html", single_file=True)
-    assert "Time scrubber" in html.read_text()
-    assert "NaN" not in html.read_text()
+    html = build_site(
+        ds,
+        tmp_path / "single.html",
+        single_file=True,
+        qc_config={
+            "analysis_phases": [5],
+            "minimum_water_flow": 0.1,
+            "minimum_gas_flow": 0.1,
+        },
+    )
+    rendered = html.read_text()
+    assert "Observation chart" in rendered
+    assert 'aria-label="Add time series"' in rendered
+    assert 'aria-label="Chart x-axis"' in rendered
+    assert "Latitude" in rendered
+    assert "Longitude" in rendered
+    assert "dragmode:'zoom'" in rendered
+    assert "width:2.8" in rendered
+    assert "observations in chart window" in rendered
+    assert "µatm" in rendered
+    assert "spectralR" in rendered
+    assert "bindTooltip" in rendered
+    assert "QC-good means every applicable check passes" in rendered
+    assert "aria-describedby=qc-help" in rendered
+    assert "Water flow" in rendered
+    assert "≥ 0.1" in rendered
+    assert "-2.5 to 45 °C" in rendered
+    assert "defaultChartVariables=['fco2_seawater','raw_watertemp']" in rendered
+    assert "rgba(70,91,99,.52)" in rendered
+    assert "dash:'dot'" in rendered
+    assert "variable_meta" in rendered
+    assert "Water temperature" in rendered
+    assert "Salinity" in rendered
+    assert "Chlorophyll a" in rendered
+    assert "Dissolved oxygen" in rendered
+    assert "yaxis2" in rendered
+    assert 'type=range' not in rendered
+    assert "NaN" not in rendered
     assert datasets_identical(paths["netcdf"], paths["zarr"])
     with pytest.raises(ValueError, match="unsupported"):
         export_dataset(ds, tmp_path, ["parquet"])

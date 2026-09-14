@@ -189,7 +189,7 @@ class NOAAMBLProvider:
 
 
 def request_from_track(spec: dict[str, Any], track: xr.Dataset) -> ProductRequest:
-    """Create a padded request covering the complete expedition track."""
+    """Create a padded request covering the complete campaign track."""
     pad_days = float(spec.get("time_padding_days", 1))
     pad_deg = float(spec.get("spatial_padding_degrees", 1))
     valid = track[["lat", "lon"]].where((track.qc_flag & 6) == 0)

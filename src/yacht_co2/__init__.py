@@ -2,7 +2,8 @@
 
 from .collocate import collocate_track, resolve_air_co2
 from .export import export_dataset
-from .ingest import read_expedition, read_log_file
+from .ingest import read_campaign, read_expedition, read_log_file
+from .manifest import CampaignManifest, ExpeditionManifest, build_manifest
 from .pipeline import Pipeline, RunResult
 from .project import load_platform, load_project_config
 from .providers import fetch_products
@@ -22,8 +23,11 @@ from .zenodo import (
 __all__ = [
     "Pipeline",
     "RunResult",
+    "CampaignManifest",
+    "ExpeditionManifest",
     "apply_qc",
     "build_site",
+    "build_manifest",
     "calibrate_co2",
     "collocate_track",
     "derive_fco2",
@@ -34,6 +38,7 @@ __all__ = [
     "load_platform",
     "load_project_config",
     "read_expedition",
+    "read_campaign",
     "read_log_file",
     "render_markdown",
     "render_video",

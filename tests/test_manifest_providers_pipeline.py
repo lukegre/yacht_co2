@@ -3,9 +3,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 import xarray as xr
+import yaml
+from loguru import logger
 
 from yacht_co2.errors import ManifestError, ProviderError
-from yacht_co2.manifest import load_manifest
+from yacht_co2.manifest import build_manifest, load_manifest
 from yacht_co2.pipeline import Pipeline
 from yacht_co2.providers import (
     CMEMSProvider,
@@ -51,8 +53,93 @@ def test_manifest_errors_and_digest(tmp_path):
     with pytest.raises(ManifestError, match="root"):
         load_manifest(bad)
     good = tmp_path / "good.yaml"
-    good.write_text("expedition: {name: Test}\ninputs: {logs: '*.log'}\n")
+    good.write_text("campaign: {name: Test}\ninputs: {logs: '*.log'}\n")
     assert load_manifest(good).digest == load_manifest(good).digest
+
+
+def test_build_manifest_uses_zenodo_name_and_processing_defaults(tmp_path):
+    folder = tmp_path / "campaign"
+    folder.mkdir()
+    zenodo = folder / "zenodo.yaml"
+    zenodo.write_text(
+        "campaign: Défi Azimut (solo)\ncampaign_date: 2022-09\n"
+        "doi: 10.5281/zenodo.12345\n"
+    )
+
+    messages = []
+    handler = logger.add(messages.append, format="{message}")
+    try:
+        path = build_manifest(zenodo)
+    finally:
+        logger.remove(handler)
+
+    document = yaml.safe_load(path.read_text())
+    assert path == folder / "manifest.yaml"
+    assert document["campaign"] == {"id": "campaign", "name": "Défi Azimut (solo)"}
+    assert document["inputs"] == {
+        "repository": "10.5281/zenodo.12345",
+        "logs": "./*.log",
+        "timezone": "UTC",
+    }
+    assert document["calibration"]["method"] == "instrument"
+    assert document["equilibrator"]["water_temperature"] == "watertemp"
+    assert document["outputs"]["formats"] == ["csv"]
+    assert load_manifest(path).name == "Défi Azimut (solo)"
+    assert any("Loading manifest defaults" in message for message in messages)
+    assert any("Resolved campaign id 'campaign'" in message for message in messages)
+    assert any("Built campaign manifest" in message for message in messages)
+
+
+def test_build_manifest_accepts_explicit_zenodo_title(tmp_path):
+    zenodo = tmp_path / "zenodo.yaml"
+    zenodo.write_text(
+        "title: Custom campaign\nslug: custom-campaign\ndoi: 10.5281/zenodo.12345\n"
+    )
+
+    path = build_manifest(zenodo)
+
+    assert yaml.safe_load(path.read_text())["campaign"] == {
+        "id": "custom-campaign",
+        "name": "Custom campaign",
+    }
+
+
+def test_build_manifest_requires_a_zenodo_repository(tmp_path):
+    zenodo = tmp_path / "zenodo.yaml"
+    zenodo.write_text("campaign: Unpublished campaign\n")
+
+    with pytest.raises(ManifestError, match="needs doi.*inputs.repository"):
+        build_manifest(zenodo)
+
+
+def test_built_manifest_fetches_default_logs_from_zenodo(tmp_path, monkeypatch):
+    zenodo = tmp_path / "zenodo.yaml"
+    zenodo.write_text(
+        "campaign: Remote campaign\ncampaign_date: 2023-06\n"
+        "doi: 10.5281/zenodo.12345\n"
+    )
+    manifest = build_manifest(zenodo)
+    log = tmp_path / "remote.log"
+    log.write_text(
+        "@NAME,DATE,TIME,Latitude,Longitude\n"
+        "@DATA,2023-01-01,12:00:00,5000,00100\n"
+    )
+    call = {}
+
+    def fake_fetch(repository, pattern, cache):
+        call.update(repository=repository, pattern=pattern, cache=cache)
+        return [log]
+
+    monkeypatch.setattr("yacht_co2.pipeline.fetch_zenodo_logs", fake_fetch)
+
+    result = Pipeline(manifest).ingest()
+
+    assert result.sizes["time"] == 1
+    assert call == {
+        "repository": "10.5281/zenodo.12345",
+        "pattern": "./*.log",
+        "cache": (tmp_path / "../.cache").resolve(),
+    }
 
 
 def test_provider_cache_and_optional_failure(tmp_path):
@@ -135,20 +222,53 @@ def test_weatherbench_era5_zarr_subset_aliases_and_coverage(tmp_path):
         provider.fetch(outside, tmp_path)
 
 
-def test_pipeline_processes_fixture(tmp_path):
+def test_pipeline_processes_fixture(tmp_path, monkeypatch):
     log = tmp_path / "one.log"
     log.write_text(
         "@NAME,DATE,TIME,FRAC,CO2,H2O,CellTemp,CellPress,Latitude,Longitude,"
         "AIN0_mA/Waterflow,FLOWgas,waterTemp,salinity,Status,STATUS\n"
         "@DATA,2023-01-01,00:00:00,0,400,10,20,1013.25,5000,00200,1,1,20,35,0,5\n"
     )
-    manifest = tmp_path / "expedition.yaml"
+    manifest = tmp_path / "manifest.yaml"
     manifest.write_text(
-        "expedition: {name: Test}\ninputs: {logs: '*.log', timezone: UTC}\n"
+        "campaign: {name: Test}\ninputs: {logs: '*.log', timezone: UTC}\n"
         "calibration: {method: instrument}\nqc: {analysis_phases: [5]}\n"
         "outputs: {directory: out, formats: [netcdf]}\n"
     )
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
     result = Pipeline(manifest).run(enrich=False, site=True)
     assert result.dataset.pco2_seawater.item() == pytest.approx(400)
+    assert result.artifacts["netcdf"].parent == tmp_path / "out"
     assert result.artifacts["netcdf"].exists()
     assert result.artifacts["site"].exists()
+
+
+def test_local_product_and_cache_paths_are_relative_to_manifest(tmp_path, monkeypatch):
+    manifest_dir = tmp_path / "config"
+    data_dir = tmp_path / "data"
+    manifest_dir.mkdir()
+    data_dir.mkdir()
+    xr.Dataset(
+        {"sst": (("time", "lat", "lon"), [[[20.0]]])},
+        coords={"time": [np.datetime64("2023-01-01")], "lat": [1.0], "lon": [2.0]},
+    ).to_netcdf(data_dir / "local.nc")
+    manifest = manifest_dir / "manifest.yaml"
+    manifest.write_text(
+        "campaign: {name: Test}\n"
+        "inputs: {logs: '*.log'}\n"
+        "products:\n"
+        "  - {name: sst, provider: local, path: ../data/local.nc, variables: [sst]}\n"
+        "outputs: {cache: ../cache}\n"
+    )
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    enriched, products, statuses = Pipeline(manifest).enrich(canonical_track())
+
+    assert enriched.sst.item() == 20
+    assert products["sst"].sst.item() == 20
+    assert statuses[0]["status"] == "fetched"
+    assert next((tmp_path / "cache").rglob("cache.nc")).is_file()

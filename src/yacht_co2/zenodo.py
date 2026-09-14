@@ -26,7 +26,7 @@ import typer
 import yaml
 from loguru import logger
 
-from .errors import ManifestError, ZenodoError
+from .errors import ManifestError, RecordPublishedError, ZenodoError
 from .project import (
     PROJECT_CONFIG_NAME,
     config_directories,
@@ -769,6 +769,15 @@ class ZenodoClient:
     def list_files(self, record_id: str) -> list[dict[str, Any]]:
         return _file_entries(self.request_json("GET", f"/api/records/{record_id}/draft/files"))
 
+    def delete_draft(self, record_id: str) -> None:
+        """Discard an unpublished draft, leaving any published version intact.
+
+        Deleting the draft of a versioned record removes only that draft and
+        its file references; the version it was branched from keeps its DOI and
+        stays citable.
+        """
+        self._request("DELETE", f"/api/records/{record_id}/draft")
+
     def delete_file(self, record_id: str, key: str) -> None:
         self._request("DELETE", f"/api/records/{record_id}/draft/files/{quote(key, safe='')}")
 
@@ -981,6 +990,44 @@ def _is_missing(error: ZenodoError) -> bool:
     return "HTTP 404" in str(error)
 
 
+def _is_unreadable(error: ZenodoError) -> bool:
+    """Return whether an error reports a record Zenodo itself cannot serialize.
+
+    Zenodo occasionally leaves a draft whose metadata no longer serializes:
+    every read of it answers HTTP 500, as does the account-wide draft listing
+    that has to render it. Such a draft can be neither repaired nor published.
+    """
+    return "HTTP 500" in str(error)
+
+
+def _discard_broken_draft(
+    client: ZenodoClient, folder: Path, state: dict[str, Any], record_id: str
+) -> str:
+    """Delete an unreadable draft and return the version to resume from.
+
+    A broken draft also blocks ``POST /versions`` for its whole concept, because
+    Zenodo answers that request with the existing draft, so discarding it is the
+    only way to make progress. The parent recorded when the draft was created
+    is returned so the caller can branch a fresh version from it; an empty
+    string means there is nothing to resume and the next run starts over.
+    """
+    logger.warning(
+        "Zenodo draft {} cannot be read back and cannot be published; discarding it", record_id
+    )
+    client.delete_draft(record_id)
+    parent = str(state.pop("parent_record_id", "") or "")
+    for key in ("record_id", "draft_url", "draft_api_url", "reserved_doi", "files"):
+        state.pop(key, None)
+    if parent:
+        state["record_id"] = parent
+        state["status"] = "published"
+    else:
+        state.pop("status", None)
+    _save_state(folder, state)
+    logger.success("Discarded Zenodo draft {}", record_id)
+    return parent
+
+
 def _is_published(record: Mapping[str, Any]) -> bool:
     """Detect a published record in either Zenodo serialization."""
     if record.get("is_published") is not None:
@@ -1132,7 +1179,19 @@ def upload_raw_folder(
                         f"purged periodically; delete {folder_path / STATE_NAME} to start a "
                         "new draft, or pass --record-id to resume a different record."
                     ) from published_error
-                raise draft_error from published_error
+                if not (_is_unreadable(draft_error) and _is_missing(published_error)):
+                    raise draft_error from published_error
+                parent = _discard_broken_draft(client, folder_path, state, current_id)
+                if not parent:
+                    raise ZenodoError(
+                        f"Discarded unreadable Zenodo draft {current_id}; rerun to upload "
+                        "this folder into a new draft."
+                    ) from draft_error
+                current_id = parent
+                record = client.get_record(current_id)
+                # The draft this run meant to write to is gone, so the only way
+                # to carry its files is a fresh version of the parent.
+                new_version = True
             published = True
         if not published:
             try:
@@ -1189,14 +1248,24 @@ def upload_raw_folder(
                 return state
         if published:
             if not new_version:
-                raise ZenodoError(
-                    "record is published; pass --new-version before uploading changes"
+                state.update(
+                    {"record_id": current_id, "sandbox": use_sandbox, "status": "published"}
+                )
+                _save_state(folder_path, state)
+                _stamp_config(config_path, _extract_doi(record) or state.get("reserved_doi"))
+                raise RecordPublishedError(
+                    f"Zenodo record {current_id} is published; pass --new-version "
+                    "before uploading changes"
                 )
             logger.info("Zenodo record {} is published; creating a new version draft", current_id)
             record = client.create_new_version(current_id)
             logger.info(
                 "Created new version draft {} from Zenodo record {}", record.get("id"), current_id
             )
+            # Remembered so that a draft Zenodo later fails to serialize can be
+            # discarded and branched again from the version it came from.
+            state["parent_record_id"] = current_id
+            _save_state(folder_path, state)
             try:
                 imported = client.import_files(str(record["id"]))
                 logger.info(

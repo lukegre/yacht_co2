@@ -1,0 +1,59 @@
+# all paths are relative to the manifest yaml file.
+campaign:
+  id: ... # from the zenodo slug or data-folder name
+  name: ... # from zenodo.yaml
+
+inputs:
+  repository: ... # Zenodo DOI copied from zenodo.yaml by build-manifest
+  logs: ./*.log
+  timezone: UTC
+
+columns: {}
+
+phases:
+  analysis: [ 5 ]
+  air: [ 22 ]
+
+calibration:
+  method: instrument
+  input: co2
+
+equilibrator:
+  h2o: h2o
+  h2o_scale: 1000
+  pressure: cellpress
+  # Temperature of the water in contact with the equilibrator membrane. The
+  # LI-850 CellTemp is its heated optical bench (~51.5 C), not water temperature.
+  water_temperature: watertemp
+  sea_temperature: watertemp
+  temperature_coefficient: 0.0423
+
+qc:
+  analysis_phases: [ 5 ]
+  minimum_water_flow: 0.1
+  minimum_gas_flow: 0.1
+  ranges:
+    co2: [ 100, 1000 ]
+    watertemp: [ -2.5, 45 ]
+    salinity: [ 0, 45 ]
+
+atmosphere:
+  air_phases: [ 22 ]
+  time_tolerance: 7D
+
+products: []
+flux:
+  formulation: wanninkhof2014
+  coefficient: 0.251
+
+outputs:
+  directory: ./
+  cache: ../.cache/
+  formats: [ csv ]
+  site: true
+  single_html: true
+  video: false
+  video_options:
+    variable: pco2_seawater
+    frame_interval: 1h
+    fps: 12

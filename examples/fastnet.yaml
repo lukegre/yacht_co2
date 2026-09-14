@@ -1,9 +1,8 @@
-expedition:
+campaign:
   id: fastnet-2023
   name: Fastnet 2023
-  race_name: Fastnet
   # Vessel and instrument identity come from project.yaml; add keys here only
-  # to override them for this expedition.
+  # to override them for this campaign.
 inputs:
   logs: ../data/2306_fastnet/*.log
   timezone: UTC
@@ -18,7 +17,7 @@ equilibrator:
   h2o: h2o
   h2o_scale: 1000
   pressure: cellpress
-  equilibrator_temperature: celltemp
+  water_temperature: watertemp
   sea_temperature: watertemp
   temperature_coefficient: 0.0423
 qc:

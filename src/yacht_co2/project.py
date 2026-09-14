@@ -1,4 +1,4 @@
-"""Project-level defaults shared by every expedition in a repository.
+"""Project-level defaults shared by every campaign in a repository.
 
 A ``project.yaml`` beside ``data/`` carries the facts that belong to the project
 rather than to one race, in one annotated block per consumer: ``platform`` for

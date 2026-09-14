@@ -6,7 +6,7 @@ class YachtCO2Error(Exception):
 
 
 class ManifestError(YachtCO2Error):
-    """The expedition manifest is absent or invalid."""
+    """The campaign manifest is absent or invalid."""
 
 
 class ParseError(YachtCO2Error):
@@ -19,3 +19,7 @@ class ProviderError(YachtCO2Error):
 
 class ZenodoError(YachtCO2Error):
     """Zenodo configuration or upload processing failed."""
+
+
+class RecordPublishedError(ZenodoError):
+    """The Zenodo record is already published, so its files are immutable."""

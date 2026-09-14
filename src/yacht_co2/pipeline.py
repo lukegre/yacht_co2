@@ -12,8 +12,8 @@ from loguru import logger
 
 from .collocate import collocate_track, resolve_air_co2
 from .export import export_dataset
-from .ingest import read_expedition
-from .manifest import ExpeditionManifest, load_manifest
+from .ingest import fetch_zenodo_logs, read_campaign
+from .manifest import CampaignManifest, load_manifest
 from .project import load_platform
 from .providers import ProductProvider, fetch_products
 from .qc import apply_qc
@@ -43,28 +43,33 @@ def _code_hash() -> str:
 
 
 class Pipeline:
-    """Reproducible expedition processor configured by a YAML manifest."""
+    """Reproducible campaign processor configured by a YAML manifest."""
 
     def __init__(
         self,
-        manifest: str | Path | ExpeditionManifest,
+        manifest: str | Path | CampaignManifest,
         *,
         providers: dict[str, ProductProvider] | None = None,
     ):
         self.manifest = (
-            load_manifest(manifest) if not isinstance(manifest, ExpeditionManifest) else manifest
+            load_manifest(manifest) if not isinstance(manifest, CampaignManifest) else manifest
         )
         self.providers = providers
 
     def ingest(self) -> xr.Dataset:
         """Read all manifest-selected source logs."""
-        logs = self.manifest.inputs["logs"]
-        source = (
-            str((self.manifest.path.parent / logs).resolve())
-            if not Path(logs).is_absolute()
-            else logs
-        )
-        return read_expedition(source, timezone=str(self.manifest.inputs.get("timezone", "UTC")))
+        logs = str(self.manifest.inputs["logs"])
+        repository = self.manifest.inputs.get("repository")
+        if repository:
+            cache = self.manifest.resolve_path(
+                self.manifest.outputs.get("cache", ".cache/yacht-co2")
+            )
+            source: str | Path | list[Path] = fetch_zenodo_logs(
+                str(repository), logs, cache
+            )
+        else:
+            source = self.manifest.resolve_path(logs)
+        return read_campaign(source, timezone=str(self.manifest.inputs.get("timezone", "UTC")))
 
     def process(self, ds: xr.Dataset) -> xr.Dataset:
         """Apply local QC, calibration, pCO2 and fCO2 processing."""
@@ -77,13 +82,18 @@ class Pipeline:
         self, ds: xr.Dataset
     ) -> tuple[xr.Dataset, dict[str, xr.Dataset], list[dict[str, str]]]:
         """Fetch configured products, collocate them, and resolve air CO2."""
-        cache = self.manifest.outputs.get("cache", ".cache/yacht-co2")
-        cache_path = (self.manifest.path.parent / cache).resolve()
+        cache_path = self.manifest.resolve_path(
+            self.manifest.outputs.get("cache", ".cache/yacht-co2")
+        )
+        specs = [dict(spec) for spec in self.manifest.products]
+        for spec in specs:
+            if spec.get("provider") == "local" and "path" in spec:
+                spec["path"] = self.manifest.resolve_path(spec["path"])
         products, statuses = fetch_products(
-            ds, self.manifest.products, cache_dir=cache_path, providers=self.providers
+            ds, specs, cache_dir=cache_path, providers=self.providers
         )
         enriched = ds
-        for spec in self.manifest.products:
+        for spec in specs:
             name = str(spec.get("name", spec.get("product_id", spec["provider"])))
             if name not in products or not spec.get("collocate", True):
                 continue
@@ -115,6 +125,7 @@ class Pipeline:
         export: bool = True,
         site: bool | None = None,
         video: bool | None = None,
+        report: bool = True,
     ) -> RunResult:
         """Run the requested raw-to-artifacts workflow."""
         ds = self.process(self.ingest())
@@ -123,12 +134,11 @@ class Pipeline:
         if enrich and self.manifest.products:
             ds, products, statuses = self.enrich(ds)
         ds.attrs.update(
-            expedition=self.manifest.name,
+            campaign=self.manifest.name,
             manifest_sha256=self.manifest.digest,
             code_sha256=_code_hash(),
         )
-        output_value = self.manifest.outputs.get("directory", "output")
-        output = (self.manifest.path.parent / output_value).resolve()
+        output = self.manifest.resolve_path(self.manifest.outputs.get("directory", "output"))
         output.mkdir(parents=True, exist_ok=True)
         artifacts: dict[str, Path] = {}
         if export:
@@ -142,22 +152,30 @@ class Pipeline:
                 artifacts[f"product:{name}"] = path
         make_site = self.manifest.outputs.get("site", False) if site is None else site
         if make_site:
-            artifacts["site"] = build_site(ds, output / "site", title=self.manifest.name)
+            artifacts["site"] = build_site(
+                ds, output / "site", title=self.manifest.name, qc_config=self.manifest.qc
+            )
             if self.manifest.outputs.get("single_html", False):
                 artifacts["single_html"] = build_site(
-                    ds, output / "site.html", title=self.manifest.name, single_file=True
+                    ds,
+                    output / "site.html",
+                    title=self.manifest.name,
+                    single_file=True,
+                    qc_config=self.manifest.qc,
                 )
         make_video = self.manifest.outputs.get("video", False) if video is None else video
         if make_video:
             video_config: dict[str, Any] = self.manifest.outputs.get("video_options", {})
             artifacts["video"] = render_video(ds, output / "track.mp4", **video_config)
-        summary = summarise(
-            ds,
-            manifest=self.manifest,
-            platform=load_platform(self.manifest.path.parent),
-            artifacts=artifacts,
-            products=statuses,
-        )
-        artifacts.update(write_report(summary, output))
+        summary: dict[str, Any] = {}
+        if report:
+            summary = summarise(
+                ds,
+                manifest=self.manifest,
+                platform=load_platform(self.manifest.path.parent),
+                artifacts=artifacts,
+                products=statuses,
+            )
+            artifacts.update(write_report(summary, output))
         logger.success("Pipeline complete for {}", self.manifest.name)
         return RunResult(ds, products, artifacts, statuses, summary)

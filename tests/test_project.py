@@ -48,8 +48,8 @@ def test_search_stops_at_the_repository_root(tmp_path):
 def test_a_file_path_is_resolved_against_its_directory(tmp_path):
     root = repository(tmp_path)
     write(root, vessel_name="YOROSHIKU")
-    manifest = root / "expedition.yaml"
-    manifest.write_text("expedition: {}\n")
+    manifest = root / "manifest.yaml"
+    manifest.write_text("campaign: {}\n")
 
     assert load_platform(manifest) == {"vessel_name": "YOROSHIKU"}
 

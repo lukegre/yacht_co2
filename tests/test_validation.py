@@ -15,7 +15,7 @@ from yacht_co2.validation import (
 )
 
 VALID_MANIFEST = {
-    "expedition": {"name": "Fastnet 2023"},
+    "campaign": {"name": "Fastnet 2023"},
     "inputs": {"logs": "*.log"},
     "calibration": {"method": "instrument"},
     "qc": {"analysis_phases": [5], "ranges": {"co2": [100, 1000]}},
@@ -86,6 +86,17 @@ def test_a_log_glob_matching_nothing_is_a_warning(tmp_path):
 
     assert errors(findings) == []
     assert "inputs.logs: matches no files: elsewhere/*.log" in messages(findings)
+
+
+def test_remote_log_glob_is_not_checked_on_the_local_filesystem(tmp_path):
+    path = write_manifest(
+        tmp_path,
+        inputs={"repository": "10.5281/zenodo.12345", "logs": "remote/*.log"},
+    )
+    findings = validate_manifest_document(yaml.safe_load(path.read_text()), path)
+
+    assert errors(findings) == []
+    assert not any(finding.where == "inputs.logs" for finding in findings)
 
 
 def test_load_manifest_refuses_a_document_with_errors(tmp_path):

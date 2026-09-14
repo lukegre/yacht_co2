@@ -32,7 +32,7 @@ def render_video(
     lon, lat, values = ds.lon.values, ds.lat.values, ds[variable].values
     fig, (map_ax, series_ax) = plt.subplots(1, 2, figsize=(10, 4))
     map_ax.plot(lon, lat, color="0.75", lw=1)
-    map_ax.set(xlabel="Longitude", ylabel="Latitude", title="Expedition track")
+    map_ax.set(xlabel="Longitude", ylabel="Latitude", title="Campaign track")
     point = map_ax.scatter([], [], c="#e6533d", s=35, zorder=3)
     series_ax.plot(ds.time.values, values, color="#087e8b", lw=0.8)
     series_ax.set(xlabel="UTC time", ylabel=variable, title="Time series")
