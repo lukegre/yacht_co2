@@ -322,6 +322,14 @@ class FakeClient:
         self.pending = True
         return {"links": {"self_html": "https://zenodo.test/requests/1"}}
 
+    def publish_draft(self, record_id):
+        self.calls.append(("publish_draft", record_id))
+        return {
+            **self._record(record_id),
+            "status": "published",
+            "links": {"self_html": f"https://zenodo.test/records/{record_id}"},
+        }
+
     def request_json(self, method, path):
         raise AssertionError(f"unexpected raw request: {method} {path}")
 
@@ -676,6 +684,51 @@ def test_a_new_version_draft_records_its_parent(tmp_path):
     upload_raw_folder(tmp_path, client=PublishedClient(), record_id="published", new_version=True)
     state = json.loads((tmp_path / STATE_NAME).read_text())
     assert state["parent_record_id"] == "published"
+
+
+def test_a_new_version_is_published_instead_of_sent_for_review(tmp_path):
+    """Zenodo rejects a review request for a new version of a published record."""
+    _write_config(tmp_path)
+    (tmp_path / "data.log").write_text("data")
+
+    class PublishedClient(FakeClient):
+        def get_draft(self, record_id):
+            if record_id == "published":
+                raise ZenodoError("HTTP 404")
+            return super().get_draft(record_id)
+
+    fake = PublishedClient()
+    result = upload_raw_folder(
+        tmp_path,
+        client=fake,
+        record_id="published",
+        new_version=True,
+        publish=True,
+        today=date(2025, 6, 1),
+    )
+
+    assert not any(call[0] in {"set_review", "submit_review"} for call in fake.calls)
+    assert ("publish_draft", "abc12-def34") in fake.calls
+    assert result["status"] == "published"
+    assert result["record_url"] == "https://zenodo.test/records/abc12-def34"
+    assert yaml.safe_load((tmp_path / "zenodo.yaml").read_text())["submitted"] == "2025-06-01"
+
+
+def test_a_resumed_versioned_draft_is_published_from_its_version_index(tmp_path):
+    """A draft that knows its own version index needs no remembered parent."""
+    _write_config(tmp_path)
+    (tmp_path / "data.log").write_text("data")
+
+    class VersionedClient(FakeClient):
+        @staticmethod
+        def _record(record_id="abc12-def34"):
+            return {**FakeClient._record(record_id), "versions": {"index": 3}}
+
+    fake = VersionedClient()
+    result = upload_raw_folder(tmp_path, client=fake, publish=True)
+
+    assert not any(call[0] == "submit_review" for call in fake.calls)
+    assert result["status"] == "published"
 
 
 def test_remote_only_blocks_review_or_is_pruned(tmp_path):

@@ -771,6 +771,10 @@ class ZenodoClient:
         result = self.request_json("POST", f"/api/records/{record_id}/draft/actions/files-import")
         return _file_entries(result)
 
+    def publish_draft(self, record_id: str) -> dict[str, Any]:
+        """Publish a draft directly, without a community review request."""
+        return dict(self.request_json("POST", f"/api/records/{record_id}/draft/actions/publish"))
+
     # -- files -------------------------------------------------------------
 
     def list_files(self, record_id: str) -> list[dict[str, Any]]:
@@ -957,11 +961,12 @@ def _log_file_plan(record_id: str, plan: Mapping[str, Sequence[str]]) -> None:
 
 
 def _stamp_config(config_path: Path, doi: str | None, submitted: str | None = None) -> None:
-    """Record the DOI, and the submission date once review is under way, in the YAML.
+    """Record the DOI, and the hand-over date, in the YAML.
 
     This makes ``zenodo.yaml`` the durable record of what a folder produced:
-    ``doi`` appears as soon as one is reserved, and ``submitted`` marks the
-    folder as handed over to its community.
+    ``doi`` appears as soon as one is reserved, and ``submitted`` marks the day
+    the folder left the local machine for good, whether it went to a curator for
+    review or straight onto Zenodo as a new version.
     """
     if not config_path.is_file():
         return
@@ -1060,6 +1065,23 @@ def _review_is_pending(review: Mapping[str, Any]) -> bool:
     return bool(review.get("is_open"))
 
 
+def _continues_a_record(record: Mapping[str, Any], state: Mapping[str, Any]) -> bool:
+    """Return whether a draft is a new version rather than a brand-new record.
+
+    Zenodo refuses a community review for such a draft ("You cannot create a
+    review for a new version of a published record"): the community was already
+    agreed when the first version was accepted and every later version inherits
+    it, so the draft is published outright instead of being handed to a curator.
+    """
+    versions = record.get("versions")
+    if isinstance(versions, Mapping) and versions.get("index") is not None:
+        try:
+            return int(versions["index"]) > 1
+        except (TypeError, ValueError):
+            logger.debug("Zenodo draft {} has an unreadable version index", record.get("id"))
+    return bool(state.get("parent_record_id"))
+
+
 def _record_links(record: Mapping[str, Any]) -> dict[str, Any]:
     links = record.get("links")
     return dict(links) if isinstance(links, Mapping) else {}
@@ -1097,8 +1119,10 @@ def upload_raw_folder(
     """Create or resume a Zenodo draft for top-level files in ``folder``.
 
     State is written to ``.zenodo-upload.json`` after every durable remote step.
-    With ``publish=True`` the draft is submitted to its configured community for
-    review; Zenodo publishes only when a curator accepts it.
+    With ``publish=True`` a first draft is submitted to its configured community
+    for review, and Zenodo publishes it only when a curator accepts it. A new
+    version of an already published record cannot be reviewed again, so it is
+    published immediately instead.
 
     Files are public unless ``embargo`` supplies a ``YYYY-MM-DD`` release date,
     in which case they stay restricted until then.
@@ -1398,25 +1422,42 @@ def upload_raw_folder(
     if publish:
         if remote_only:
             names = ", ".join(remote_only)
-            raise ZenodoError(f"remote-only files block review submission: {names}; pass --prune")
+            raise ZenodoError(f"remote-only files block publishing: {names}; pass --prune")
         if not state.get("reserved_doi"):
             raise ZenodoError(
-                f"Zenodo draft {current_id} has no reserved DOI, which review submission "
+                f"Zenodo draft {current_id} has no reserved DOI, which publishing "
                 "requires; rerun without --publish to reserve one"
             )
-        client.set_review(current_id, resolved["community"])
-        review = client.submit_review(current_id)
-        state["status"] = "pending_review"
-        state["community"] = resolved["community"]
-        state["review_url"] = review.get("links", {}).get("self_html", state.get("review_url"))
-        logger.success(
-            "Submitted Zenodo draft {} to {} for review", current_id, resolved["community"]
-        )
+        if _continues_a_record(record, state):
+            published_record = client.publish_draft(current_id)
+            published_links = _record_links(published_record)
+            state["status"] = "published"
+            state["community"] = resolved["community"]
+            state["record_url"] = (
+                published_links.get("self_html")
+                or published_links.get("record_html")
+                or state.get("record_url")
+            )
+            logger.success(
+                "Published Zenodo draft {} as a new version of record {}; new versions "
+                "inherit the community, so no review is requested",
+                current_id,
+                state.get("parent_record_id") or "its predecessor",
+            )
+        else:
+            client.set_review(current_id, resolved["community"])
+            review = client.submit_review(current_id)
+            state["status"] = "pending_review"
+            state["community"] = resolved["community"]
+            state["review_url"] = review.get("links", {}).get("self_html", state.get("review_url"))
+            logger.success(
+                "Submitted Zenodo draft {} to {} for review", current_id, resolved["community"]
+            )
     _save_state(folder_path, state)
     _stamp_config(
         config_path,
         state.get("reserved_doi"),
-        stamp_date if state["status"] == "pending_review" else None,
+        stamp_date if state["status"] in {"pending_review", "published"} else None,
     )
     return state
 
@@ -1437,7 +1478,9 @@ def zenodo_upload_cli(
     config: Path | None = typer.Option(None, help="Use an alternative YAML configuration."),
     community: str | None = typer.Option(None, help="Override the target community slug."),
     publish: bool = typer.Option(
-        True, "--publish/--no-publish", help="Submit the draft for community review."
+        True,
+        "--publish/--no-publish",
+        help="Submit a first draft for community review, or publish a new version outright.",
     ),
     embargo: str | None = typer.Option(
         None,
@@ -1477,6 +1520,9 @@ def zenodo_upload_cli(
             typer.echo("skipped subfolders: " + ", ".join(result["skipped_folders"]))
     elif result["status"] == "pending_review":
         typer.echo(f"submitted for review: {result.get('review_url') or result['record_id']}")
+    elif result["status"] == "published":
+        typer.echo(f"published: {result.get('record_url') or result['record_id']}")
+        typer.echo(f"DOI: {result.get('reserved_doi') or 'pending'}")
     else:
         typer.echo(f"draft: {result.get('draft_url') or result['record_id']}")
         typer.echo(f"reserved DOI: {result.get('reserved_doi') or 'pending'}")

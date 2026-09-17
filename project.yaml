@@ -38,8 +38,17 @@ zenodo:
   license: cc-by-4.0
   publisher: Zenodo # required before DataCite will register the DOI
   description: |
-    Underway carbon dioxide observations collected from an ocean-going yacht,
-    including additional documentation. 
+    <p>Underway carbon dioxide observations collected from an ocean-going yacht, including additional documentation.</p>
+
+    <p>Files in this repo:</p>
+
+    <pre><code>    *.log              raw log files directly from the ferrybox
+    manifest.yaml      config of how data was processed (QC, columns, phases, etc.)
+    &lt;campaign&gt;.json    report on the full campaign with: averages, sampling phase counts
+    &lt;campaign&gt;.html    an interactive cruise viewer
+    &lt;campaign&gt;.nc      merged log files and processed data (e.g., fco2_seawater)
+    </code></pre>
+
   language: eng
   keywords:
   - carbon dioxide

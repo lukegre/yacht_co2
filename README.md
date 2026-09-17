@@ -309,20 +309,23 @@ every run warns and names them. Pack a subfolder into an archive if its contents
 must be archived. Markdown files are also copied into the record's notes with
 HTML escaped.
 
-The command reserves a DOI and submits the draft to its community for review
+The command reserves a DOI and submits a first draft to its community for review
 (the slug is resolved to an id automatically); `--no-publish` stops at the
-draft. The record becomes public only when a curator accepts it. The reserved
-DOI is written back as `doi:` into the folder's `zenodo.yaml`, and `submitted:
-YYYY-MM-DD` once submitted, making that file the durable record of what the
-folder produced. While a review is pending, reruns change nothing unless the
-notes changed; files are frozen, so a rerun that finds new or changed files
-warns and points at `--new-version`.
+draft. The record becomes public only when a curator accepts it. A new version
+of an already published record is not reviewable — Zenodo rejects a second
+review request, because the community was agreed when the first version was
+accepted — so `--new-version` publishes the draft outright once its files are
+uploaded. The reserved DOI is written back as `doi:` into the folder's
+`zenodo.yaml`, and `submitted: YYYY-MM-DD` once the draft is handed over,
+making that file the durable record of what the folder produced. While a review
+is pending, reruns change nothing unless the notes changed; files are frozen, so
+a rerun that finds new or changed files warns and points at `--new-version`.
 
 Progress is kept in `.zenodo-upload.json` (no secrets). A retry resumes the same
 draft, skips checksum-identical files and replaces changed ones. Every run logs
 its plan — the resumed draft and where its id came from, counts of new, changed,
 unchanged and remote-only files, one line per file, and a closing summary.
-Remote-only files block review submission; inspect them and use `--prune` to
+Remote-only files block publishing; inspect them and use `--prune` to
 delete them deliberately. Published records are immutable and need
 `--new-version` (optionally with `--record-id`); the new draft imports the
 previous version's files, so unchanged files are not re-uploaded.
