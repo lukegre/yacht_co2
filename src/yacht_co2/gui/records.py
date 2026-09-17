@@ -18,6 +18,7 @@ from typing import Any, Protocol
 from nicegui import run, ui
 
 from ..errors import YachtCO2Error
+from ..manifest import MANIFEST_NAME
 from ..record import PublishedRecord, RecordFile, import_record, read_record
 from .components import show_artifact
 
@@ -170,8 +171,13 @@ class RecordPanel:
             self.outcome = ui.column().classes("w-full gap-2")
 
     def _listing(self, record: PublishedRecord) -> None:
-        """Show what the record holds, products one by one and the rest counted."""
-        others = tuple(file for file in record.files if not file.is_product and not file.is_log)
+        """Show products and their manifest by name, and count the bulk files."""
+        manifests = tuple(file for file in record.files if file.key == MANIFEST_NAME)
+        others = tuple(
+            file
+            for file in record.files
+            if not file.is_product and not file.is_log and file.key != MANIFEST_NAME
+        )
         with ui.list().props("dense separator").classes("w-full border rounded"):
             for file in record.products:
                 self._row(
@@ -180,6 +186,8 @@ class RecordPanel:
                     file.size,
                     KIND_ICONS.get(file.kind, "insert_drive_file"),
                 )
+            for file in manifests:
+                self._row(file.key, "processing manifest", file.size, "tune")
             # The raw logs are the bulk of a record and are never picked over
             # one at a time, so they are counted rather than listed.
             for group, noun, icon in (
@@ -244,6 +252,9 @@ class RecordPanel:
         )
 
     def _actions(self, record: PublishedRecord) -> None:
+        product_files = tuple(
+            file for file in record.files if file.is_product or file.key == MANIFEST_NAME
+        )
         if not record.products and not record.logs:
             ui.label(
                 "This record holds neither this package's products nor raw logs, so "
@@ -253,9 +264,9 @@ class RecordPanel:
         with ui.row().classes("gap-2 flex-wrap"):
             if record.products:
                 ui.button(
-                    f"Download the products ({len(record.products)})",
+                    f"Download the products ({len(product_files)})",
                     icon="download",
-                    on_click=lambda: self._download(record.products, "products"),
+                    on_click=lambda: self._download(product_files, "products"),
                 ).props("unelevated").mark("record-download-products")
             if record.logs:
                 ui.button(

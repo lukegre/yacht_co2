@@ -38,6 +38,8 @@ PRODUCTS = (
     file("yacht_co2-fastnet_race-2023_07_24-report.json", "report", 4_000),
 )
 LOGS = tuple(file(f"23072{index}_001.log", "log") for index in range(3))
+MANIFEST = file("manifest.yaml", "other", 4_000)
+OTHER = file("notes.md", "other", 2_000)
 
 
 @pytest.fixture
@@ -145,19 +147,25 @@ async def test_the_campaign_is_offered_as_the_record_already_named_it(user: User
 async def test_downloading_the_products_leaves_a_folder_that_can_be_looked_at(
     user: User, root, lookup, downloads
 ):
-    lookup(record(*PRODUCTS, *LOGS))
+    lookup(record(*PRODUCTS, *LOGS, MANIFEST, OTHER))
     await user.open("/")
     user.find(marker="record-reference").type(DOI)
     user.find(marker="record-lookup").click()
     await user.should_see(marker="record-download-products")
+    await user.should_see("manifest.yaml")
+    await user.should_see("processing manifest")
+    await user.should_see("1 other file")
+    await user.should_see("Download the products (4)")
     user.find(marker="record-download-products").click()
 
     await user.should_see("Downloaded into", retries=50)
-    # Only the products were asked for, not the logs beside them.
-    assert downloads[0]["keys"] == [product.key for product in PRODUCTS]
+    # The processing manifest belongs with the products it describes, while
+    # the raw logs remain a separate (and potentially much larger) download.
+    assert downloads[0]["keys"] == [product.key for product in PRODUCTS] + [MANIFEST.key]
     assert downloads[0]["campaign"] == "Fastnet Race"
     folder = root / "2307_fastnet"
     assert (folder / "yacht_co2-fastnet_race-2023_07_24-site.html").is_file()
+    assert (folder / "manifest.yaml").is_file()
     assert not (folder / "230720_001.log").exists()
 
     # The folder is now an ordinary campaign, listed and selected, and what it
