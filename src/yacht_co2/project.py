@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 from loguru import logger
 
 from .errors import ManifestError, YachtCO2Error
+from .userconfig import config_dir, user_project_config
 
 PROJECT_CONFIG_NAME = "project.yaml"
 PROJECT_CONFIG_ENV = "YACHT_CO2_PROJECT_CONFIG"
@@ -74,8 +75,13 @@ def config_directories(start: str | Path | None = None) -> list[Path]:
 
 
 def load_environment(directories: list[Path]) -> None:
-    """Add ``.env`` values to the environment without overriding real exports."""
-    for directory in (*directories, Path.cwd()):
+    """Add ``.env`` values to the environment without overriding real exports.
+
+    The user's own configuration directory is read last: ``override=False``
+    means the first value seen wins, so a token kept there is the fallback for
+    someone with no shell to export one in, never an override of the project's.
+    """
+    for directory in (*directories, Path.cwd(), config_dir()):
         load_dotenv(directory / ".env", override=False)
 
 
@@ -102,12 +108,21 @@ def config_paths(start: str | Path | None = None) -> list[Path]:
     A path set in ``YACHT_CO2_PROJECT_CONFIG`` ranks below the search so that a
     ``project.yaml`` inside the repository still refines it. Without it the
     search alone applies, which finds the one in the repository root.
+
+    The user's own ``project.yaml`` ranks below both, so a configuration
+    written by the graphical interface supplies what a repository leaves unsaid
+    and overrides nothing the repository states.
     """
     directories = config_directories(start)
     load_environment(directories)
+    personal = user_project_config()
     configured = configured_config_path()
     found = [directory / PROJECT_CONFIG_NAME for directory in directories]
-    paths = [*([configured] if configured else []), *found]
+    paths = [
+        *([personal] if personal else []),
+        *([configured] if configured else []),
+        *found,
+    ]
     return [path for path in dict.fromkeys(paths) if path.is_file()]
 
 

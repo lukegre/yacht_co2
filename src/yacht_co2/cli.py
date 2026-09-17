@@ -2,39 +2,21 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-from dataclasses import replace
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 import typer
 import xarray as xr
-from loguru import logger
 
-from .errors import RecordPublishedError, ZenodoError
+from .errors import YachtCO2Error
 from .export import netcdf_encoding
-from .manifest import (
-    MANIFEST_NAME,
-    CampaignManifest,
-    build_manifest,
-    check_manifest,
-    load_manifest,
-)
-from .naming import output_name, output_stem
+from .manifest import MANIFEST_NAME, CampaignManifest, build_manifest, check_manifest, load_manifest
+from .naming import output_stem
 from .pipeline import Pipeline
-from .project import (
-    PROJECT_CONFIG_ENV,
-    config_paths,
-    load_platform,
-    load_project_config,
-    read_yaml,
-)
-from .report import summarise, write_report
+from .project import PROJECT_CONFIG_ENV, config_paths, load_project_config
 from .site import build_site, site_filename
 from .validation import Finding, errors, validate_project_document
-from .zenodo import CONFIG_NAME as ZENODO_CONFIG_NAME
-from .zenodo import upload_raw_folder
+from .workflow import processed_dataset, run_campaign
 
 APP_HELP = """Process and explore underway yacht CO2 observations.
 
@@ -51,139 +33,11 @@ A campaign is one command, [bold]yacht-co2 run manifest.yaml[/bold], which:
   6. builds the single-file interactive site.
 
 [bold]build-manifest[/bold] writes the manifest that run takes; [bold]enrich[/bold]
-and [bold]site[/bold] redo one step of the procedure on its own.
+and [bold]site[/bold] redo one step of the procedure on its own. [bold]gui[/bold]
+opens the same procedure in a browser, for a machine with no Python on it.
 """
 
 app = typer.Typer(help=APP_HELP, no_args_is_help=True, rich_markup_mode="rich")
-PIPELINE_STATE_NAME = ".yacht-co2-pipeline.json"
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _manifest_raw_files(folder: Path) -> set[Path]:
-    """Return top-level raw inputs named by an existing campaign manifest."""
-    manifest_path = folder / MANIFEST_NAME
-    if not manifest_path.is_file():
-        return set()
-    manifest = read_yaml(manifest_path)
-    pattern = str(manifest.get("inputs", {}).get("logs") or "./*.log")
-    return {
-        path
-        for path in folder.glob(pattern.removeprefix("./"))
-        if path.is_file() and path.parent == folder and not path.is_symlink()
-    }
-
-
-def _checkpoint_files(folder: Path, previous: dict[str, Any] | None = None) -> list[Path]:
-    """Select raw files without mistaking products from a prior run for inputs."""
-    paths = _manifest_raw_files(folder)
-    if previous:
-        for name in previous.get("files", {}):
-            path = folder / name
-            if path.is_file() and path.parent == folder and not path.is_symlink():
-                paths.add(path)
-    if paths:
-        return sorted(paths, key=lambda path: path.name)
-    return sorted(
-        (
-            path
-            for path in folder.iterdir()
-            if path.is_file()
-            and not path.is_symlink()
-            and not path.name.startswith(".")
-            and path.name != ZENODO_CONFIG_NAME
-        ),
-        key=lambda path: path.name,
-    )
-
-
-def _read_pipeline_state(folder: Path) -> dict[str, Any]:
-    path = folder / PIPELINE_STATE_NAME
-    if not path.is_file():
-        return {}
-    try:
-        state = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        logger.warning("Ignoring invalid pipeline checkpoint {}", path)
-        return {}
-    return state if isinstance(state, dict) else {}
-
-
-def _write_upload_checkpoint(
-    folder: Path, config: Path, upload: dict[str, Any] | None = None
-) -> None:
-    state = _read_pipeline_state(folder)
-    previous = state.get("zenodo_upload")
-    previous = previous if isinstance(previous, dict) else None
-    files = _checkpoint_files(folder, previous)
-    state["version"] = 1
-    state["zenodo_upload"] = {
-        "record_id": str(
-            (upload or {}).get("record_id") or (previous or {}).get("record_id") or ""
-        ),
-        "config_sha256": _sha256(config),
-        "files": {
-            path.name: {"sha256": _sha256(path), "size": path.stat().st_size} for path in files
-        },
-    }
-    destination = folder / PIPELINE_STATE_NAME
-    temporary = folder / f"{PIPELINE_STATE_NAME}.tmp"
-    temporary.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temporary.replace(destination)
-
-
-def _legacy_upload_was_submitted(folder: Path, config: Path) -> bool:
-    """Recognise upload state written before pipeline checksums were introduced."""
-    upload_path = folder / ".zenodo-upload.json"
-    if not upload_path.is_file():
-        return False
-    try:
-        upload = json.loads(upload_path.read_text(encoding="utf-8"))
-        configured = read_yaml(config)
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        return False
-    return bool(
-        isinstance(upload, dict)
-        and upload.get("record_id")
-        and upload.get("review_url")
-        and configured.get("doi")
-        and configured.get("submitted")
-    )
-
-
-def _upload_checkpoint_matches(folder: Path, config: Path) -> bool:
-    state = _read_pipeline_state(folder)
-    checkpoint = state.get("zenodo_upload")
-    if not isinstance(checkpoint, dict):
-        if not _legacy_upload_was_submitted(folder, config):
-            return False
-        _write_upload_checkpoint(folder, config)
-        logger.info("Recorded checksum checkpoint for the previously submitted Zenodo upload")
-        return True
-
-    files = checkpoint.get("files")
-    if not isinstance(files, dict) or checkpoint.get("config_sha256") != _sha256(config):
-        return False
-    for name, expected in files.items():
-        path = folder / name
-        if (
-            not isinstance(expected, dict)
-            or not path.is_file()
-            or path.is_symlink()
-            or path.parent != folder
-            or expected.get("size") != path.stat().st_size
-            or expected.get("sha256") != _sha256(path)
-        ):
-            return False
-    if {path.name for path in _manifest_raw_files(folder)} - set(files):
-        return False
-    return True
 
 
 def _echo_findings(source: str, findings: list[Finding]) -> None:
@@ -207,59 +61,6 @@ def build_manifest_command(
 ) -> None:
     """Build a processing manifest from Zenodo campaign metadata."""
     typer.echo(build_manifest(zenodo, output, defaults=defaults))
-
-
-def _campaign_config(manifest: CampaignManifest) -> Path:
-    """Return the Zenodo configuration beside the manifest, which names the archive."""
-    config = manifest.path.parent / ZENODO_CONFIG_NAME
-    if not config.is_file():
-        raise typer.BadParameter(f"{manifest.path.parent} holds no {ZENODO_CONFIG_NAME}")
-    return config
-
-
-def _warn_when_manifest_is_stale(manifest: CampaignManifest, config: Path) -> None:
-    """Report a manifest pointing at a different record than the configuration does.
-
-    The manifest is meant to be tuned by hand, so it is never rebuilt behind
-    the operator's back: a mismatch is named and the run goes on.
-    """
-    archived = str(read_yaml(config).get("doi") or "").strip()
-    processing = str(manifest.inputs.get("repository") or "").strip()
-    if archived and processing and archived != processing:
-        logger.warning(
-            "{} reads {} but {} now names {}; rebuild the manifest to process the new record",
-            manifest.path.name,
-            processing,
-            config.name,
-            archived,
-        )
-
-
-def _processed_dataset(
-    manifest: CampaignManifest,
-) -> tuple[xr.Dataset, dict[str, Any] | None, Path]:
-    """Return the campaign's processed dataset, its report, and their directory.
-
-    Processing a campaign is slow and its result is an artifact in its own
-    right, so an existing track NetCDF is reused rather than rebuilt. When
-    there is none the campaign is processed and exported as NetCDF -- adding
-    that format if the manifest omits it -- so that the next build can reuse it.
-    """
-    directory = manifest.resolve_path(manifest.outputs.get("directory", "output"))
-    dataset_path = directory / output_name(manifest.name, manifest.date, "track", "nc")
-    if dataset_path.is_file():
-        logger.info("Reusing the processed dataset {}", dataset_path)
-        report_path = directory / output_name(manifest.name, manifest.date, "report", "json")
-        report = json.loads(report_path.read_text()) if report_path.is_file() else None
-        return xr.open_dataset(dataset_path).load(), report, directory
-
-    logger.info("No processed dataset at {}; processing the campaign first", dataset_path)
-    formats = [str(fmt) for fmt in manifest.outputs.get("formats", ["netcdf"])]
-    if not any(fmt.lower() in {"netcdf", "nc", ".nc"} for fmt in formats):
-        formats.append("netcdf")
-    outputs = {**manifest.outputs, "formats": formats}
-    result = Pipeline(replace(manifest, outputs=outputs)).run(site=False, video=False)
-    return result.dataset, result.summary or None, directory
 
 
 def _site_destination(
@@ -312,86 +113,10 @@ def run(
     resumes where the last one stopped. Write the manifest first with
     [bold]yacht-co2 build-manifest zenodo.yaml[/bold].
     """
-    manifest_path = manifest.resolve()
-    campaign_manifest = load_manifest(manifest_path)
-    folder = manifest_path.parent
-    config_path = _campaign_config(campaign_manifest)
-    _warn_when_manifest_is_stale(campaign_manifest, config_path)
-
-    campaign = campaign_manifest.name
-    campaign_date = campaign_manifest.date
-    if not campaign_date:
-        raise typer.BadParameter(f"{manifest_path} does not give the campaign date")
-
-    if _upload_checkpoint_matches(folder, config_path):
-        logger.info("Zenodo upload checksums match; continuing with the processing pipeline")
-    else:
-        upload: dict[str, Any] | None = None
-        try:
-            upload = upload_raw_folder(
-                folder,
-                campaign=campaign,
-                campaign_date=campaign_date,
-                config=config_path,
-                publish=True,
-            )
-        except RecordPublishedError as exc:
-            # The archive already holds this folder, so there is nothing to upload
-            # and every product below is still built from the published record.
-            logger.info("{}; processing the published record", exc)
-        except ZenodoError as exc:
-            raise typer.BadParameter(str(exc)) from exc
-        _write_upload_checkpoint(folder, config_path, upload)
-
-    # Products are built from the archived record rather than the folder they
-    # were uploaded from, so what is published is provably what was processed.
-    outputs = {
-        **campaign_manifest.outputs,
-        "directory": str(folder),
-        "site": False,
-        "single_html": False,
-        "video": False,
-    }
-    run_manifest = replace(campaign_manifest, outputs=outputs)
     try:
-        result = Pipeline(run_manifest).run(enrich=False, site=False, video=False, report=False)
-    except ZenodoError as exc:
-        # A just-submitted record is not public until a curator accepts it, so
-        # its files cannot be read back yet. The local logs are the ones that
-        # were uploaded, so they stand in until the record is available.
-        logger.warning("Could not read the archived record ({}); using the local logs", exc)
-        local_inputs = dict(campaign_manifest.inputs)
-        local_inputs.pop("repository", None)
-        result = Pipeline(replace(run_manifest, inputs=local_inputs)).run(
-            enrich=False,
-            site=False,
-            video=False,
-            report=False,
-        )
-
-    site_path = folder / site_filename(campaign, campaign_date)
-    result.artifacts["site"] = site_path
-    result.summary = summarise(
-        result.dataset,
-        manifest=campaign_manifest,
-        platform=load_platform(folder),
-        artifacts=result.artifacts,
-        products=result.product_status,
-    )
-    result.artifacts.update(
-        write_report(result.summary, folder, stem=output_stem(campaign, campaign_date, "report"))
-    )
-    build_site(
-        result.dataset,
-        site_path,
-        title=campaign_manifest.title,
-        single_file=True,
-        report=result.summary,
-        qc_config=campaign_manifest.qc,
-        phase_config=campaign_manifest.phases,
-        **campaign_manifest.outputs.get("site_options", {}),
-    )
-
+        result = run_campaign(manifest)
+    except YachtCO2Error as exc:
+        raise typer.BadParameter(str(exc)) from exc
     for kind, path in result.artifacts.items():
         typer.echo(f"{kind}: {path}")
 
@@ -462,7 +187,7 @@ def site(
     directory holds one; otherwise the campaign is processed first.
     """
     campaign = load_manifest(manifest)
-    dataset, report, directory = _processed_dataset(campaign)
+    dataset, report, directory = processed_dataset(campaign)
     destination, one_file = _site_destination(campaign, directory, output, single_file)
     typer.echo(
         build_site(
@@ -476,6 +201,34 @@ def site(
             **campaign.outputs.get("site_options", {}),
         )
     )
+
+
+@app.command()
+def gui(
+    data_root: Optional[Path] = typer.Option(  # noqa: UP045 - typer needs an explicit Optional
+        None,
+        exists=True,
+        file_okay=False,
+        help="Folder holding the campaign folders; remembered between launches.",
+    ),
+    port: int = typer.Option(8080, help="Port to serve on."),
+    show: bool = typer.Option(True, help="Open a browser window on start."),
+) -> None:
+    """Open the whole procedure in a browser, for someone who does not use a terminal.
+
+    The same five steps as the commands above -- archive, build a manifest,
+    edit it, process, publish -- driven by forms rather than by flags, with the
+    shared defaults kept in your own configuration directory so they outlive
+    any one campaign. The server listens on this machine only.
+    """
+    try:
+        from .gui import launch
+    except ImportError as exc:  # pragma: no cover - depends on how it was installed
+        raise typer.BadParameter(
+            f"the graphical interface needs its extra dependencies ({exc}); "
+            "install them with: uv sync --extra gui"
+        ) from exc
+    launch(data_root=data_root, port=port, show=show)
 
 
 if __name__ == "__main__":

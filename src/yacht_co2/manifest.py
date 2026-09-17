@@ -14,12 +14,24 @@ from loguru import logger
 
 from .errors import ManifestError
 from .project import read_yaml
+from .userconfig import user_manifest_defaults
 from .validation import Finding, errors, validate_manifest_document
 from .zenodo import CONFIG_NAME as ZENODO_CONFIG_NAME
 
 MANIFEST_NAME = "manifest.yaml"
 DEFAULTS_NAME = "defaults.yaml"
 TEMPLATES_DIRECTORY = "templates"
+
+
+def default_template() -> Path:
+    """Return the template a new manifest starts from.
+
+    The user's own ``manifest.yaml`` is preferred over the packaged one so that
+    a fleet's settled processing choices -- its phase codes, its QC ranges --
+    are the starting point for every campaign, not something re-entered per
+    folder. Without one the packaged template applies unchanged.
+    """
+    return user_manifest_defaults() or packaged_defaults()
 
 
 def packaged_defaults() -> Path:
@@ -157,8 +169,9 @@ def build_manifest(
 ) -> Path:
     """Build a processing manifest from a folder's ``zenodo.yaml``.
 
-    The generated manifest inherits processing values from the packaged
-    ``templates/defaults.yaml``. The campaign ID follows Zenodo's slug rule: an
+    The generated manifest inherits processing values from the user's own
+    manifest template, or from the packaged ``templates/defaults.yaml`` when
+    they have none. The campaign ID follows Zenodo's slug rule: an
     explicit slug wins, otherwise the data-folder name is used. A Zenodo
     campaign is preferred as the concise name; an explicit title is accepted
     as a fallback.
@@ -166,7 +179,7 @@ def build_manifest(
     zenodo_path = Path(zenodo).resolve()
     if not zenodo_path.is_file():
         raise ManifestError(f"Zenodo configuration does not exist: {zenodo_path}")
-    defaults_path = Path(defaults).resolve() if defaults is not None else packaged_defaults()
+    defaults_path = Path(defaults).resolve() if defaults is not None else default_template()
     if not defaults_path.is_file():
         raise ManifestError(f"manifest defaults do not exist: {defaults_path}")
 

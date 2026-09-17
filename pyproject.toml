@@ -27,12 +27,17 @@ dependencies = [
 cmems = ["copernicusmarine>=2"]
 era5 = ["dask[array]>=2024.2", "gcsfs>=2024.2"]
 video = ["imageio-ffmpeg>=0.5"]
+gui = [
+    "nicegui>=2.0",
+    "ruamel-yaml>=0.18",
+]
 
 [dependency-groups]
 dev = [
   "coverage>=7.6",
   "mypy>=1.11",
   "pytest>=8.2",
+  "pytest-asyncio>=0.23",
   "pytest-cov>=5",
   "ruff>=0.6",
 ]
@@ -48,6 +53,10 @@ build-backend = "uv_build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+# The graphical interface is tested through NiceGUI's simulated browser,
+# whose fixtures are async; nothing else in the suite is.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
 line-length = 100

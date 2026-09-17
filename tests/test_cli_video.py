@@ -167,7 +167,7 @@ def test_cli_run_uploads_and_builds_local_artifacts(tmp_path, monkeypatch):
         upload_call.update(folder=folder, **kwargs)
         return {"status": "pending_review", "record_id": "12345"}
 
-    monkeypatch.setattr("yacht_co2.cli.upload_raw_folder", fake_upload)
+    monkeypatch.setattr("yacht_co2.workflow.upload_raw_folder", fake_upload)
     fetched = {}
 
     def fake_fetch(repository, pattern, cache, **kwargs):
@@ -215,7 +215,7 @@ def test_cli_run_processes_the_manifests_folder_not_the_working_directory(tmp_pa
         upload_call.update(folder=folder, **kwargs)
         return {"status": "pending_review", "record_id": "12345"}
 
-    monkeypatch.setattr("yacht_co2.cli.upload_raw_folder", fake_upload)
+    monkeypatch.setattr("yacht_co2.workflow.upload_raw_folder", fake_upload)
     monkeypatch.setattr(
         "yacht_co2.pipeline.fetch_zenodo_logs",
         lambda repository, pattern, cache, **kwargs: [folder / "one.log"],
@@ -245,7 +245,7 @@ def test_cli_run_falls_back_to_local_logs_while_a_record_is_unreadable(tmp_path,
     (tmp_path / "one.log").write_text(LOG)
     manifest = built_manifest(tmp_path)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("yacht_co2.cli.upload_raw_folder", lambda folder, **kwargs: {})
+    monkeypatch.setattr("yacht_co2.workflow.upload_raw_folder", lambda folder, **kwargs: {})
 
     def refuse(repository, pattern, cache, **kwargs):
         raise ZenodoError(f"could not read Zenodo repository {repository}: HTTP 404")
@@ -272,7 +272,7 @@ def test_cli_run_resumes_without_touching_the_manifest(tmp_path, monkeypatch):
         uploads.append(folder)
         return {"status": "pending_review", "record_id": "12345"}
 
-    monkeypatch.setattr("yacht_co2.cli.upload_raw_folder", fake_upload)
+    monkeypatch.setattr("yacht_co2.workflow.upload_raw_folder", fake_upload)
     monkeypatch.setattr(
         "yacht_co2.pipeline.fetch_zenodo_logs",
         lambda repository, pattern, cache, **kwargs: [tmp_path / "one.log"],
@@ -305,7 +305,7 @@ def test_cli_run_reuploads_when_a_checkpointed_raw_file_changes(tmp_path, monkey
         uploads.append(folder)
         return {"status": "pending_review", "record_id": "12345"}
 
-    monkeypatch.setattr("yacht_co2.cli.upload_raw_folder", fake_upload)
+    monkeypatch.setattr("yacht_co2.workflow.upload_raw_folder", fake_upload)
     monkeypatch.setattr(
         "yacht_co2.pipeline.fetch_zenodo_logs",
         lambda repository, pattern, cache, **kwargs: [raw],
@@ -324,7 +324,7 @@ def test_cli_run_reports_a_manifest_left_on_an_older_record(tmp_path, monkeypatc
     (tmp_path / "one.log").write_text(LOG)
     manifest = built_manifest(tmp_path)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("yacht_co2.cli.upload_raw_folder", lambda folder, **kwargs: {})
+    monkeypatch.setattr("yacht_co2.workflow.upload_raw_folder", lambda folder, **kwargs: {})
     monkeypatch.setattr(
         "yacht_co2.pipeline.fetch_zenodo_logs",
         lambda repository, pattern, cache, **kwargs: [tmp_path / "one.log"],
@@ -350,7 +350,7 @@ def test_cli_run_reports_a_manifest_left_on_an_older_record(tmp_path, monkeypatc
 def test_cli_run_says_when_the_folder_holds_no_zenodo_config(tmp_path, monkeypatch):
     (tmp_path / "one.log").write_text(LOG)
     manifest = campaign_manifest(tmp_path)
-    monkeypatch.setattr("yacht_co2.cli.upload_raw_folder", lambda folder, **kwargs: {})
+    monkeypatch.setattr("yacht_co2.workflow.upload_raw_folder", lambda folder, **kwargs: {})
 
     result = CliRunner().invoke(app, ["run", str(manifest)])
 

@@ -1,0 +1,65 @@
+# Project defaults: the facts that belong to the installation rather than to
+# one campaign. `yacht-co2 gui` seeds this file into your personal
+# configuration directory, where it applies to every campaign you process.
+#
+# One block per consumer:
+#   platform:  vessel and instrument identity, copied into the run report
+#   zenodo:    archival metadata, used when raw logs are uploaded
+#
+# This copy has the lowest precedence of any project configuration: a
+# project.yaml inside a data repository still refines it key by key, and
+# YACHT_CO2_PROJECT_CONFIG still outranks it. Nothing already working changes
+# because this file exists.
+#
+# Your Zenodo token does NOT belong here. It is kept beside this file in a
+# private .env; the interface writes it for you.
+#
+# This template is deliberately incomplete: every `...` below is a value only
+# you know. Validation reports each one until it is filled in, so an unedited
+# copy cannot archive a record under a placeholder name.
+
+platform:
+  # Reported verbatim, so add or rename keys freely. Serials belong here rather
+  # than in code because they change when hardware is swapped.
+  #
+  # `vessel_name` is the one key both blocks share: the zenodo title_template
+  # below inherits it, so the boat is named here only.
+  vessel_name: ... # e.g. Yoroshiku (Oliver Heer)
+  vessel_type: ... # e.g. yacht IMOCA 60 class
+  instrument: SubCtech OceanPack Race
+  co2_sensor: LI850
+
+zenodo:
+  # Ordered list; each entry is exactly "last name, first name, ORCID".
+  # The ORCID may be bare or a full https://orcid.org/... URL.
+  # e.g. creators: ["Gregor, Luke, 0000-0001-6071-1857"]
+  creators: []
+  community: ... # slug of the Zenodo community that reviews new records
+  resource_type: dataset
+  license: cc-by-4.0
+  publisher: Zenodo # required before DataCite will register the DOI
+  language: eng
+  keywords:
+  - carbon dioxide
+  - fco2
+  - underway observations
+  - ocean
+  description: |
+    <p>Underway carbon dioxide observations collected from an ocean-going yacht.</p>
+  #
+  # A record is named from its campaign rather than typed out per folder. The
+  # template may use {vessel}, {campaign}, {campaign_date}, {year} and {slug}.
+  # {vessel} comes from platform.vessel_name above; the campaign comes from
+  # each data folder's zenodo.yaml.
+  title_template: Surface ocean CO2 – {vessel} – {campaign} ({campaign_date})
+  #
+  # Left unset, the publication date is the day the record is first created.
+  publication_date: null
+  embargo:
+    enabled: false
+    months: 12
+    until: null
+  notes: ""
+  # true sends every upload to sandbox.zenodo.org, which is the safe place to
+  # rehearse the whole procedure. Records there are periodically deleted.
+  sandbox: false

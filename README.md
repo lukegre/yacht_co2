@@ -54,6 +54,59 @@ compressed NetCDF by default, plus Zarr v2 and CSV on request — and
 `outputs.video: true` renders video (needs FFmpeg on `PATH`) when the pipeline
 is driven from Python.
 
+## Without a terminal
+
+`yacht-co2 gui` opens the same procedure in a browser, for a machine that has
+one person on it and no Python in their hands:
+
+```console
+uv sync --extra gui
+uv run yacht-co2 gui
+```
+
+It serves on `127.0.0.1` only and opens a tab. Pick the folder your campaign
+folders live in, pick a campaign, and work down the five steps above —
+archive, build a manifest, check it, process, publish. Each step reads the
+folder to see whether it has already been done, so the page opens on the first
+thing left to do and a campaign can be picked up months later, or on another
+machine, without anyone remembering where it got to. Whatever a step logs
+appears in the page as it runs, and the built page, dataset and report are one
+click away once they exist.
+
+A step reports what it did rather than that it ran. Adding the products to a
+record whose community review is still open, for instance, completes without
+archiving anything, because a Zenodo record's files are frozen until a curator
+accepts it — so the page says it is waiting instead of offering a button that
+would appear to work, and an upload that archived nothing never reports success.
+
+Step three is a form over the manifest — phase codes, QC ranges, which files
+are written — with the file itself on the next tab. Both save through the same
+round-tripping writer, so the comments that explain each value survive being
+edited, and the sections the form does not cover (`products`, `atmosphere`,
+`site_options`) are left exactly as they were.
+
+### Shared defaults
+
+The **Defaults** button edits the two documents every campaign inherits, kept
+in your own configuration directory rather than in a checkout:
+
+| File | Holds |
+| ---- | ----- |
+| `project.yaml` | vessel and instrument identity, and the Zenodo metadata every record is built from |
+| `manifest.yaml` | the processing template `build-manifest` starts a new campaign from |
+| `.env` | your Zenodo token, written readable only by you |
+
+The directory is `~/.config/yacht_co2` (`$XDG_CONFIG_HOME` is honoured) and
+`%APPDATA%\yacht_co2` on Windows; `YACHT_CO2_CONFIG_DIR` overrides both. Both
+YAML files are seeded from the packaged templates on first launch and never
+overwritten afterwards.
+
+This copy has the **lowest** precedence of any project configuration: a
+`project.yaml` inside a repository still refines it key by key and
+`YACHT_CO2_PROJECT_CONFIG` still outranks it, so writing one changes nothing
+about what an existing checkout already does. The token is read only when the
+environment does not already supply one.
+
 ## Manifest
 
 Scientific processing needs a `manifest.yaml`; the raw readers
@@ -63,8 +116,10 @@ manifest.
 Build one beside an existing `zenodo.yaml`; `campaign.name` comes from its
 campaign (or explicit title), `campaign.date` from its campaign date, and
 `campaign.id` from its slug or the data-folder name. The remaining values come
-from the template that ships with the package,
-`src/yacht_co2/templates/defaults.yaml`; `--defaults` points at another file:
+from your own `manifest.yaml` template if you have one (see
+[Without a terminal](#without-a-terminal)), otherwise from the one that ships
+with the package, `src/yacht_co2/templates/defaults.yaml`; `--defaults` points
+at another file:
 
 ```console
 uv run yacht-co2 build-manifest data/2306_fastnet/zenodo.yaml
@@ -215,6 +270,11 @@ wins — a campaign manifest for `platform:`, a data folder's `zenodo.yaml` for
 repository root) points at a project configuration outside the repository.
 Being the *default*, it ranks below the search. A path that does not exist is an
 error, not a silent fallback.
+
+Below both sits `~/.config/yacht_co2/project.yaml` (`%APPDATA%\yacht_co2` on
+Windows), the per-user copy the graphical interface writes. It supplies what
+nothing nearer states and overrides nothing, so it is invisible to a repository
+that carries its own.
 
 The superseded `zenodo_project.yaml` and `.env.zenodo` are still read as whole
 mappings, ranking below a `zenodo:` block in the same directory.
@@ -434,4 +494,6 @@ uv run mypy
 uv run pytest --cov=yacht_co2 --cov-branch
 ```
 
-Offline tests use synthetic provider fixtures and need no credentials.
+Offline tests use synthetic provider fixtures and need no credentials. The
+interface is tested through NiceGUI's simulated browser rather than a real one,
+so `tests/gui` needs `uv sync --extra gui` and is skipped without it.

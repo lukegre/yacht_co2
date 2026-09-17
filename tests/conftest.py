@@ -12,12 +12,35 @@ resolution deterministic whatever the test order and wherever pytest is invoked.
 
 from __future__ import annotations
 
+from importlib.util import find_spec
+
 import pytest
 
 from yacht_co2.project import PROJECT_CONFIG_ENV
+from yacht_co2.userconfig import CONFIG_DIR_ENV
+
+#: The graphical interface is tested through NiceGUI's simulated browser, whose
+#: fixtures come from a plugin pytest only accepts in the root configuration.
+#: It is an optional extra, so its tests are skipped where it is not installed.
+_HAS_NICEGUI = find_spec("nicegui") is not None
+pytest_plugins = ["nicegui.testing.user_plugin"] if _HAS_NICEGUI else []
+# The whole directory, not its files: without the extra even its conftest
+# and package marker fail to import.
+collect_ignore = [] if _HAS_NICEGUI else ["gui"]
 
 
 @pytest.fixture(autouse=True)
 def _isolate_project_config(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.delenv(PROJECT_CONFIG_ENV, raising=False)
     monkeypatch.chdir(tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_user_config(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """Keep the developer's own ``~/.config/yacht_co2`` out of the suite.
+
+    Project resolution and ``build_manifest`` both read it, so a real one on
+    the machine running the tests would change what they resolve. The directory
+    is pointed at an empty place, which is the state of a fresh installation.
+    """
+    monkeypatch.setenv(CONFIG_DIR_ENV, str(tmp_path / "user-config"))
