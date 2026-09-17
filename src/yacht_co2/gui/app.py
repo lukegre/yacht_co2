@@ -132,13 +132,15 @@ class Workbench:
     # -- chrome ---------------------------------------------------------
 
     def _build_header(self) -> None:
-        with ui.header().classes("items-center justify-between px-4"):
-            with ui.column().classes("gap-0"):
-                ui.label("yacht-co2").classes("text-lg font-medium")
+        with ui.header().classes("items-center justify-between px-6 py-3 shadow-md"):
+            with ui.column().classes("gap-0.5"):
+                ui.label("Yacht CO2").classes("text-xl font-semibold tracking-tight")
                 ui.label("underway CO2, from raw logs to a published record").classes(
-                    "text-xs opacity-80"
+                    "text-sm opacity-90"
                 )
-            ui.button("Defaults", icon="settings", on_click=self._open_settings).props("flat")
+            ui.button("Defaults", icon="settings", on_click=self._open_settings).props(
+                "flat no-caps"
+            )
 
     def _open_settings(self) -> None:
         with ui.dialog().props("full-width") as dialog, ui.card().classes("w-full"):
@@ -215,9 +217,16 @@ class Workbench:
                         ("manifest", status.has_manifest),
                         ("processed", status.is_processed),
                     ):
-                        ui.badge(label).props("" if done else "outline").classes(
-                            "text-xs " + ("text-green-700" if done else "text-gray-400")
-                        )
+                        # A filled badge in the default palette pairs a blue
+                        # background with the text-color override, which is
+                        # too low-contrast to read; outlining it uses the
+                        # same colour for text and border on a plain
+                        # background instead.
+                        ui.badge(
+                            label,
+                            color="green" if done else "grey",
+                            outline=not done,
+                        ).classes("text-xs")
 
     def _pick_root(self) -> None:
         if self.picker is None:
@@ -284,19 +293,22 @@ class Workbench:
         if self.status is None:
             return
         status = self.status
-        with ui.stepper(value=STEPS[self._first_unfinished()]).props(
-            "vertical flat header-nav"
-        ).classes("w-full"):
-            with ui.step(STEPS[0]).mark("step-archive"):
-                self._step_archive(status)
-            with ui.step(STEPS[1]).mark("step-manifest"):
-                self._step_manifest(status)
-            with ui.step(STEPS[2]).mark("step-settings"):
-                self._step_settings(status)
-            with ui.step(STEPS[3]).mark("step-process"):
-                self._step_process(status)
-            with ui.step(STEPS[4]).mark("step-publish"):
-                self._step_publish(status)
+        first = self._first_unfinished()
+        builders = (
+            ("archive", self._step_archive),
+            ("manifest", self._step_manifest),
+            ("settings", self._step_settings),
+            ("process", self._step_process),
+            ("publish", self._step_publish),
+        )
+        with ui.stepper(value=STEPS[first]).props("vertical flat header-nav").classes("w-full"):
+            for index, (marker, builder) in enumerate(builders):
+                # A step earlier than the open one is done, and "done" is
+                # what draws the check mark in place of the step number.
+                with ui.step(STEPS[index]).props("done" if index < first else "").mark(
+                    f"step-{marker}"
+                ):
+                    builder(status)
 
     def _first_unfinished(self) -> int:
         """Open the stepper on the first step this folder has not been through."""

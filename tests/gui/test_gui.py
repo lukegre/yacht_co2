@@ -24,7 +24,7 @@ def campaigns(tmp_path):
 
 async def test_the_page_lists_the_campaign_folders_it_finds(user: User, campaigns):
     await user.open("/")
-    await user.should_see("yacht-co2")
+    await user.should_see("Yacht CO2")
     await user.should_see("Campaign folders")
     await user.should_see("2306_fastnet")
     # No folder is chosen yet, so there are no steps to show.
