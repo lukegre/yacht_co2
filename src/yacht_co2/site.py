@@ -297,6 +297,17 @@ def _qc_help(config: dict[str, Any] | None) -> str:
     for name, bounds in ranges.items():
         label, units = range_labels.get(name, (name.replace("_", " ").title(), ""))
         rows.append((label, f"{bounds[0]} to {bounds[1]}{units}", "physical range"))
+    # A phase switch leaves the previous phase's gas or water in the cell, so
+    # each phase settles at its own rate and names its own lag.
+    lags = dict(config.get("phase_transition_lag") or {})
+    for role, seconds in lags.items():
+        rows.append(
+            (
+                f"{str(role).replace('_', ' ').capitalize()} settling",
+                f"More than {seconds} s after the phase starts",
+                "transition lag",
+            )
+        )
     rows.extend(
         [
             ("Calibration", "Required calibration available", "missing calibration"),
@@ -311,7 +322,14 @@ def _qc_help(config: dict[str, Any] | None) -> str:
         "<span class=qc-popover id=qc-help role=tooltip><strong>QC-good means every applicable check passes</strong>"
         "<span class=qc-intro>With the filter enabled, any observation carrying one or more flags is hidden. "
         "These checks describe seawater, so they are asked only of the seawater phases; a gas standard is not "
-        "judged against them and is drawn whatever the filter says. Use the sampling phase picker to isolate one.</span>"
+        "judged against them and is drawn whatever the filter says. Use the sampling phase picker to isolate one."
+        + (
+            " The settling checks are the exception: a switch leaves the previous phase in the cell whatever "
+            "comes next, so they are asked of every phase."
+            if lags
+            else ""
+        )
+        + "</span>"
         "<span class=qc-table-wrap><table><thead><tr><th scope=col>Check</th><th scope=col>Accepted</th><th scope=col>Flag if failed</th></tr></thead>"
         f"<tbody>{body}</tbody></table></span></span>"
     )

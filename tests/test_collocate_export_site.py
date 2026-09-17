@@ -109,6 +109,7 @@ def test_exports_and_site(tmp_path):
         qc_config={
             "minimum_water_flow": 0.1,
             "minimum_gas_flow": 0.1,
+            "phase_transition_lag": {"analysis": 1500, "air": 30},
         },
     )
     rendered = html.read_text()
@@ -131,7 +132,17 @@ def test_exports_and_site(tmp_path):
     assert "Water flow" in rendered
     assert "≥ 0.1" in rendered
     assert "-2.5 to 45 °C" in rendered
-    assert "defaultChartVariables=['fco2_seawater','raw_watertemp']" in rendered
+    # Each phase's settling time is named in the QC popover, and the popover
+    # says these are the checks that are not seawater-only.
+    assert "Analysis settling" in rendered
+    assert "More than 1500 s after the phase starts" in rendered
+    assert "Air settling" in rendered
+    assert "More than 30 s after the phase starts" in rendered
+    assert "The settling checks are the exception" in rendered
+    # The opening view is the raw CO2 reading: against water temperature on the
+    # chart, and colouring the track on the map.
+    assert "defaultChartVariables=['raw_co2','raw_watertemp']" in rendered
+    assert "defaultMapVariable=S.variables.includes('raw_co2')?'raw_co2':S.variables[0]" in rendered
     # The clicked observation is one red, black-edged dot, on the map and on
     # every chart series that has a value there.
     assert "SELECTED_COLOUR='#e6533d', SELECTED_EDGE='#000'" in rendered
