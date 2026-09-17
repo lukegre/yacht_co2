@@ -87,6 +87,10 @@ jobs:
           then Run anyway. README.md has the detail.
 
     - name: Upload the release archives
+      # gh release upload has stalled here with no output for many minutes
+      # (uploads.github.com transfer never finishing). Prefer curl: hard
+      # --max-time per attempt and built-in retries on transient failures.
+      timeout-minutes: 12
       env:
         GH_TOKEN: ${{ github.token }}
         # This job downloads artifacts only — there is no checkout — so gh
@@ -94,6 +98,7 @@ jobs:
         GH_REPO: ${{ github.repository }}
       shell: bash
       run: |
+        set -euo pipefail
         shopt -s nullglob
         archives=(artifacts/*.zip artifacts/*.tar.gz)
         if (( ${#archives[@]} == 0 )); then
@@ -101,19 +106,53 @@ jobs:
           exit 1
         fi
 
-        # GitHub can transiently reject an otherwise valid release asset. Upload
-        # each archive separately so a retry only replaces the failed file.
+        ls -lh "${archives[@]}"
+
+        release_json="$(gh api "repos/${GH_REPO}/releases/tags/${GITHUB_REF_NAME}")"
+        upload_url="$(printf '%s' "$release_json" | jq -r '.upload_url' | sed 's/{?name,label}$//')"
+        if [[ -z "$upload_url" || "$upload_url" == null ]]; then
+          echo "::error::Could not resolve release upload URL for ${GITHUB_REF_NAME}"
+          exit 1
+        fi
+
+        # Replace any asset already on the release so a re-run does not 422 on
+        # the name, then POST the bytes with an explicit transfer deadline.
         for archive in "${archives[@]}"; do
-          for attempt in 1 2 3; do
-            if gh release upload "$GITHUB_REF_NAME" "$archive" --clobber; then
-              break
-            fi
-            if (( attempt == 3 )); then
-              echo "::error file=$archive::Upload failed after $attempt attempts"
-              exit 1
-            fi
-            delay=$((attempt * 10))
-            echo "Upload failed; retrying $archive in ${delay}s"
-            sleep "$delay"
-          done
+          name="$(basename "$archive")"
+          echo "Preparing ${name}"
+
+          asset_id="$(
+            printf '%s' "$release_json" \
+              | jq -r --arg name "$name" 'first(.assets[] | select(.name == $name) | .id) // empty'
+          )"
+          if [[ -n "$asset_id" ]]; then
+            echo "Removing existing asset id=${asset_id} (${name})"
+            gh api -X DELETE "repos/${GH_REPO}/releases/assets/${asset_id}"
+            release_json="$(
+              printf '%s' "$release_json" \
+                | jq --argjson id "$asset_id" '.assets |= map(select(.id != $id))'
+            )"
+          fi
+
+          echo "Uploading ${name}"
+          # curl, not gh: gh release upload has hung here with no output. Bound
+          # the transfer (--max-time) and retry transient 5xx/timeouts only.
+          http_code="$(
+            curl --silent --show-error --location \
+              --retry 3 --retry-delay 10 \
+              --retry-connrefused \
+              --connect-timeout 30 --max-time 300 \
+              -o /tmp/release-upload-body.json -w '%{http_code}' \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary "@${archive}" \
+              "${upload_url}?name=$(printf '%s' "$name" | jq -sRr @uri)"
+          )"
+          if [[ "$http_code" != 201 && "$http_code" != 200 ]]; then
+            echo "::error file=${archive}::Upload failed with HTTP ${http_code}"
+            cat /tmp/release-upload-body.json || true
+            exit 1
+          fi
+          echo "Uploaded ${name} (HTTP ${http_code})"
         done
