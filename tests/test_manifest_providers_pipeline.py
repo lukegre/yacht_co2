@@ -6,6 +6,7 @@ import xarray as xr
 import yaml
 from loguru import logger
 
+import yacht_co2
 from yacht_co2.errors import ManifestError, ProviderError
 from yacht_co2.manifest import build_manifest, load_manifest, packaged_defaults
 from yacht_co2.pipeline import Pipeline
@@ -59,8 +60,6 @@ def test_manifest_errors_and_digest(tmp_path):
 
 def test_the_manifest_template_ships_inside_the_package():
     """A build that dropped the template would leave build-manifest with nothing."""
-    import yacht_co2
-
     template = packaged_defaults()
     assert template.is_file()
     # Resolved through the installed package, not a path walked up to the repo.
