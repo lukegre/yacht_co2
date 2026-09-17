@@ -8,7 +8,7 @@ import pytest
 import yaml
 from nicegui.testing import User
 
-from yacht_co2.gui import components
+from yacht_co2.gui import app, components
 from yacht_co2.gui.yamlform import load_document, save_document, write_path
 from yacht_co2.manifest import packaged_defaults
 from yacht_co2.userconfig import write_settings
@@ -32,6 +32,18 @@ async def test_the_page_lists_the_campaign_folders_it_finds(user: User, campaign
     await user.should_see("2306_fastnet")
     # No folder is chosen yet, so there are no steps to show.
     await user.should_not_see(marker="step-archive")
+
+
+async def test_a_campaign_folder_can_be_shown_in_the_file_manager(
+    user: User, campaigns, monkeypatch
+):
+    shown: list[Path] = []
+    monkeypatch.setattr(app, "reveal", shown.append)
+
+    await user.open("/")
+    user.find(marker="show-folder-2306_fastnet").click()
+
+    assert shown == [campaigns / "2306_fastnet"]
 
 
 async def test_progress_is_collapsed_by_default(user: User, campaigns):

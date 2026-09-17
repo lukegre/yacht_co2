@@ -30,6 +30,13 @@ async def test_opening_the_defaults_seeds_both_templates(user: User):
     assert config_file(MANIFEST_DEFAULTS_NAME).is_file()
 
 
+async def test_settings_cog_contrasts_with_the_header(user: User):
+    await user.open("/")
+    button = _one(user, "settings-menu")
+    assert "color" not in button._props
+    assert "text-white" in button._classes
+
+
 async def test_the_seeded_project_file_says_what_is_still_missing(user: User):
     await user.open("/")
     user.find(marker="settings-menu").click()

@@ -27,6 +27,7 @@ from .components import show_artifact
 from .folders import FolderPicker
 from .jobs import RUNNER
 from .manifestform import ManifestForm
+from .opening import reveal
 from .records import RecordPanel
 from .settings import settings_panels
 
@@ -122,9 +123,9 @@ class Workbench:
                 ui.label("underway CO2, from raw logs to a published record").classes(
                     "text-sm opacity-90"
                 )
-            ui.button(icon="settings", on_click=self._open_settings).props(
+            ui.button(icon="settings", color=None, on_click=self._open_settings).props(
                 "flat round aria-label=Settings"
-            ).mark("settings-menu").tooltip("Settings")
+            ).classes("text-white").mark("settings-menu").tooltip("Settings")
 
     def _open_settings(self) -> None:
         with ui.dialog().props("full-width") as dialog, ui.card().classes("w-full"):
@@ -202,7 +203,7 @@ class Workbench:
                 ui.label(status.title).classes("text-sm font-medium")
                 ui.label(status.folder.name).classes("text-xs text-gray-500")
             with ui.item_section().props("side"):
-                with ui.row().classes("gap-1 flex-wrap justify-end"):
+                with ui.row().classes("gap-1 flex-wrap items-center justify-end"):
                     for label, done in (
                         (f"{len(status.logs)} logs", status.has_logs),
                         ("archived", status.is_uploaded),
@@ -219,6 +220,18 @@ class Workbench:
                             color="green" if done else "grey",
                             outline=not done,
                         ).classes("text-xs")
+                    (
+                        ui.button(icon="folder_open", color=None)
+                        .props("flat round dense aria-label='Show folder in file manager'")
+                        .classes("text-gray-500")
+                        .mark(f"show-folder-{status.folder.name}")
+                        .tooltip("Show folder in file manager")
+                        .on(
+                            "click",
+                            lambda: reveal(status.folder),
+                            js_handler="event => { event.stopPropagation(); emit(); }",
+                        )
+                    )
 
     def _pick_root(self) -> None:
         if self.picker is None:
