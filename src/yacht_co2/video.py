@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -10,6 +11,31 @@ import pandas as pd
 import xarray as xr
 from loguru import logger
 from matplotlib.animation import FFMpegWriter
+
+from .errors import YachtCO2Error
+
+
+def ffmpeg_executable() -> str:
+    """Return the encoder this machine can actually run.
+
+    Matplotlib looks for an ``ffmpeg`` on the path and says nothing useful when
+    there is none. The ``video`` extra installs ``imageio-ffmpeg``, which ships
+    a binary of its own precisely so that nobody has to install one by hand, so
+    that binary is used whenever the path has nothing -- which is what makes
+    ``pip install yacht-co2[video]`` enough on a machine with no system ffmpeg.
+    """
+    configured = str(plt.rcParams.get("animation.ffmpeg_path") or "ffmpeg")
+    if Path(configured).is_file() or shutil.which(configured):
+        return configured
+    try:
+        from imageio_ffmpeg import get_ffmpeg_exe
+    except ImportError:
+        raise YachtCO2Error(
+            "Rendering a video needs ffmpeg, and this machine has none. Install the extra "
+            "that brings its own -- pip install 'yacht-co2[video]' -- or put an ffmpeg on "
+            "the PATH."
+        ) from None
+    return get_ffmpeg_exe()
 
 
 def render_video(
@@ -24,6 +50,9 @@ def render_video(
     """Render a synchronized H.264 track and time-series MP4."""
     if variable not in ds:
         raise KeyError(variable)
+    # Asked for before a frame is drawn: an encoder that is not there should
+    # say so in one line, not after the figure has been built.
+    encoder = ffmpeg_executable()
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     valid_time = pd.DatetimeIndex(ds.time.values).dropna()
@@ -39,7 +68,13 @@ def render_video(
     cursor = series_ax.axvline(ds.time.values[0], color="#e6533d")
     stamp = fig.suptitle("")
     writer = FFMpegWriter(fps=fps, codec="libx264", extra_args=["-pix_fmt", "yuv420p"])
-    with writer.saving(fig, str(destination), dpi=dpi):
+    # The writer reads the encoder's location out of the global settings, so it
+    # is put there for the length of this render and no longer: rendering a
+    # video should not change how the rest of the process draws.
+    with (
+        plt.rc_context({"animation.ffmpeg_path": encoder}),
+        writer.saving(fig, str(destination), dpi=dpi),
+    ):
         for frame, index in zip(frames, indices, strict=True):
             point.set_offsets(np.array([[lon[index], lat[index]]]))
             cursor.set_xdata([ds.time.values[index], ds.time.values[index]])

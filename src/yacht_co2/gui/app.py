@@ -16,8 +16,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from loguru import logger
-from nicegui import app, run, ui
-from starlette.responses import FileResponse, PlainTextResponse
+from nicegui import run, ui
 
 from ..manifest import MANIFEST_NAME, build_manifest
 from ..userconfig import read_settings, read_token, write_settings
@@ -27,6 +26,7 @@ from ..zenodo import upload_raw_folder
 from .folders import FolderPicker
 from .jobs import RUNNER
 from .manifestform import ManifestForm
+from .opening import open_file, reveal
 from .settings import settings_panels
 
 #: The kinds of notification the page raises, as Quasar names them.
@@ -41,8 +41,35 @@ STEPS = (
 )
 
 
-def _artifact_url(path: Path) -> str:
-    return f"/artifact?path={path}"
+def _show_page(path: Path) -> None:
+    """Put a built page in front of the default browser.
+
+    The page is one self-contained file, so the browser can be handed it
+    directly; it is also the one artifact that is meant to be looked at rather
+    than kept, which is why it is opened and not merely pointed at.
+    """
+    open_file(path)
+
+
+def _show_report(path: Path) -> None:
+    """Show a run report in the workbench itself.
+
+    The report is JSON, which the desktop would hand to whichever editor claims
+    the extension -- or to nothing at all. Reading it here is what "show the
+    report" means, and the file is still one button away in its folder.
+    """
+    try:
+        text = path.read_text()
+    except OSError as exc:
+        ui.notify(f"Could not read {path}: {exc}", type="warning")
+        return
+    with ui.dialog() as dialog, ui.card().classes("w-full max-w-3xl"):
+        ui.label(path.name).classes("font-medium")
+        ui.code(text, language="json").classes("w-full max-h-[60vh] overflow-auto text-xs")
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Show in file manager", on_click=lambda: reveal(path)).props("flat")
+            ui.button("Close", on_click=dialog.close).props("flat")
+    dialog.open()
 
 
 def archive(folder: Path, **options: Any) -> dict[str, Any]:
@@ -88,24 +115,6 @@ def upload_outcome(result: Any) -> tuple[str, Notification]:
     if status == "dry-run":
         return ("Checked. Nothing was uploaded.", "info")
     return ("Uploaded to Zenodo.", "positive")
-
-
-def serve_artifact(path: str) -> Any:
-    """Serve one built artifact so the page can open it.
-
-    Only files under the configured data root are served. The server listens on
-    this machine alone, but a path parameter that reaches the whole filesystem
-    is worth closing whatever is listening.
-    """
-    root = Path(read_settings().get("data_root") or Path.home()).expanduser().resolve()
-    try:
-        target = Path(path).expanduser().resolve()
-        target.relative_to(root)
-    except (OSError, ValueError):
-        return PlainTextResponse("Not available.", status_code=404)
-    if not target.is_file():
-        return PlainTextResponse("Not built yet.", status_code=404)
-    return FileResponse(target)
 
 
 class Workbench:
@@ -199,9 +208,11 @@ class Workbench:
 
     def _campaign_row(self, status: CampaignStatus) -> None:
         selected = self.folder == status.folder
-        with ui.item(on_click=lambda status=status: self._select(status.folder)).classes(
-            "rounded " + ("bg-blue-50" if selected else "")
-        ).mark(f"campaign-{status.folder.name}"):
+        with (
+            ui.item(on_click=lambda status=status: self._select(status.folder))
+            .classes("rounded " + ("bg-blue-50" if selected else ""))
+            .mark(f"campaign-{status.folder.name}")
+        ):
             with ui.item_section().props("avatar"):
                 ui.icon("check_circle" if status.is_processed else "folder").classes(
                     "text-green-600" if status.is_processed else "text-gray-500"
@@ -230,9 +241,7 @@ class Workbench:
 
     def _pick_root(self) -> None:
         if self.picker is None:
-            self.picker = FolderPicker(
-                self.data_root, title="Where your campaign folders live"
-            )
+            self.picker = FolderPicker(self.data_root, title="Where your campaign folders live")
         self.picker.open_at(self.data_root, self._set_root)
 
     def _set_root(self, folder: Path) -> None:
@@ -305,8 +314,10 @@ class Workbench:
             for index, (marker, builder) in enumerate(builders):
                 # A step earlier than the open one is done, and "done" is
                 # what draws the check mark in place of the step number.
-                with ui.step(STEPS[index]).props("done" if index < first else "").mark(
-                    f"step-{marker}"
+                with (
+                    ui.step(STEPS[index])
+                    .props("done" if index < first else "")
+                    .mark(f"step-{marker}")
                 ):
                     builder(status)
 
@@ -352,9 +363,7 @@ class Workbench:
             .props('dense outlined hint="YYYY-MM-DD, YYYY-MM or YYYY"')
             .classes("w-full max-w-md")
         )
-        ui.label(f"{len(status.logs)} log files will be uploaded.").classes(
-            "text-sm text-gray-600"
-        )
+        ui.label(f"{len(status.logs)} log files will be uploaded.").classes("text-sm text-gray-600")
         token_note = ui.label().classes("text-sm")
 
         def upload(dry_run: bool) -> None:
@@ -519,22 +528,30 @@ class Workbench:
             ui.label(detail).classes("text-sm text-amber-900")
 
     def _artifacts(self, status: CampaignStatus) -> None:
-        """Link whatever this campaign has already produced."""
+        """Show whatever this campaign has already produced.
+
+        Each of these is handled by the desktop rather than by the browser.
+        The workbench may be drawn in a native window, which has no second tab
+        to open and no downloads folder to put a file in, so a link would do
+        nothing there; the server is the same machine as the desktop, so it
+        asks the desktop instead and both ways of drawing the page behave the
+        same.
+        """
         built = [
-            ("Interactive page", status.site, "public"),
-            ("Dataset (NetCDF)", status.track, "dataset"),
-            ("Run report", status.report, "description"),
+            ("Interactive page", status.site, "public", _show_page),
+            ("Dataset (NetCDF)", status.track, "dataset", reveal),
+            ("Run report", status.report, "description", _show_report),
         ]
-        built = [(label, path, icon) for label, path, icon in built if path is not None]
+        built = [entry for entry in built if entry[1] is not None]
         if not built:
             return
         with ui.row().classes("gap-2 flex-wrap"):
-            for label, path, icon in built:
+            for label, path, icon, show in built:
                 assert path is not None
                 ui.button(
                     label,
                     icon=icon,
-                    on_click=lambda path=path: ui.navigate.to(_artifact_url(path), new_tab=True),
+                    on_click=lambda path=path, show=show: show(path),
                 ).props("flat dense")
 
 
@@ -551,7 +568,6 @@ def register_pages() -> None:
     browser does between tests. Call it once per application.
     """
     ui.page("/")(workbench)
-    app.get("/artifact")(serve_artifact)
 
 
 #: The window the packaged application opens at, wide enough for the two

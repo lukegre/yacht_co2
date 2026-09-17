@@ -1,14 +1,32 @@
 import json
+import sys
+import types
 
 import numpy as np
+import pytest
 import xarray as xr
 import yaml
 from loguru import logger
 from typer.testing import CliRunner
 
 from yacht_co2.cli import app
-from yacht_co2.errors import ZenodoError
-from yacht_co2.video import render_video
+from yacht_co2.errors import YachtCO2Error, ZenodoError
+from yacht_co2.video import ffmpeg_executable, render_video
+
+
+def has_an_encoder() -> bool:
+    """Say whether this machine can encode at all.
+
+    Neither a system ffmpeg nor the ``video`` extra that brings its own is
+    installed by a plain ``uv sync``, which is what continuous integration
+    runs: there the encoding is not being tested, and saying so is better than
+    failing on a missing binary.
+    """
+    try:
+        ffmpeg_executable()
+    except YachtCO2Error:
+        return False
+    return True
 
 
 def video_dataset():
@@ -25,6 +43,28 @@ def video_dataset():
     )
 
 
+def test_an_ffmpeg_on_the_path_is_the_one_used(monkeypatch):
+    monkeypatch.setattr("yacht_co2.video.shutil.which", lambda name: f"/usr/bin/{name}")
+    assert ffmpeg_executable() == "ffmpeg"
+
+
+def test_the_extras_own_encoder_is_used_when_the_machine_has_none(monkeypatch):
+    """Which is what ``pip install yacht-co2[video]`` is for."""
+    monkeypatch.setattr("yacht_co2.video.shutil.which", lambda name: None)
+    module = types.ModuleType("imageio_ffmpeg")
+    module.get_ffmpeg_exe = lambda: "/bundled/ffmpeg"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "imageio_ffmpeg", module)
+    assert ffmpeg_executable() == "/bundled/ffmpeg"
+
+
+def test_no_encoder_anywhere_says_how_to_get_one(monkeypatch):
+    monkeypatch.setattr("yacht_co2.video.shutil.which", lambda name: None)
+    monkeypatch.setitem(sys.modules, "imageio_ffmpeg", None)
+    with pytest.raises(YachtCO2Error, match=r"yacht-co2\[video\]"):
+        ffmpeg_executable()
+
+
+@pytest.mark.skipif(not has_an_encoder(), reason="no ffmpeg on this machine")
 def test_video_is_h264_and_has_expected_frames(tmp_path):
     path = render_video(video_dataset(), tmp_path / "test.mp4", fps=2)
     assert path.exists() and path.stat().st_size > 1000

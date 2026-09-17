@@ -7,7 +7,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with: { enable-cache: true }
-      - run: uv sync --locked
+      # The interface is part of what is shipped, so it is part of what is
+      # tested: its tests skip themselves where the extra is absent, and a run
+      # that skipped them would leave a shipped module unexercised -- and below
+      # the coverage floor this job enforces. pywebview is deliberately not
+      # installed: there is no display to draw a window on, and the Linux
+      # application does not use one anyway.
+      - run: uv sync --locked --extra gui
       - run: uv run ruff check .
       - run: uv run mypy
       - run: uv run pytest --cov=yacht_co2 --cov-branch --cov-fail-under=85

@@ -10,11 +10,19 @@ itself is checked by ``packaging/smoke.py``, which needs a bundle to check.
 from __future__ import annotations
 
 import sys
+from importlib.util import find_spec
 
 import pytest
 
 from yacht_co2 import desktop
 from yacht_co2.userconfig import MANIFEST_DEFAULTS_NAME, PROJECT_NAME, config_dir
+
+#: Deciding *how* to show the pages needs nothing but this module; actually
+#: handing them over reaches into the interface, which is an optional extra and
+#: is absent from an installation that only ever runs the command line.
+needs_the_interface = pytest.mark.skipif(
+    find_spec("nicegui") is None, reason="the gui extra is not installed"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -114,6 +122,7 @@ def test_linux_without_a_display_uses_its_browser(monkeypatch):
         (False, 8080),
     ],
 )
+@needs_the_interface
 def test_the_launch_matches_how_the_pages_will_be_shown(monkeypatch, windowed, expected_port):
     recorded: dict[str, object] = {}
     monkeypatch.setattr(desktop, "can_open_a_window", lambda: windowed)
@@ -123,6 +132,7 @@ def test_the_launch_matches_how_the_pages_will_be_shown(monkeypatch, windowed, e
     assert recorded == {"port": expected_port, "show": not windowed, "native": windowed}
 
 
+@needs_the_interface
 def test_a_failure_before_the_first_page_is_reported_rather_than_raised(monkeypatch):
     """Nothing can be shown in the interface if the interface never opens."""
 

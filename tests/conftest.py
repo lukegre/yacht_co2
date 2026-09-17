@@ -44,3 +44,24 @@ def _isolate_user_config(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     is pointed at an empty place, which is the state of a fresh installation.
     """
     monkeypatch.setenv(CONFIG_DIR_ENV, str(tmp_path / "user-config"))
+
+
+@pytest.fixture(autouse=True)
+def _plain_cli_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Render the command line the same way wherever the suite runs.
+
+    Typer draws its errors with Rich, which colours what it recognises -- and
+    an option name inside a sentence is one of those things. A continuous
+    integration runner sets ``FORCE_COLOR``, so the same message that reads
+    ``pass --campaign and --campaign-date`` on a developer's machine arrives
+    with escape codes between its words, and every assertion about the text
+    fails somewhere that has nothing to do with what the text says. Colour is
+    turned off and the width fixed so that a message is compared as written.
+    """
+    for variable in ("FORCE_COLOR", "CLICOLOR_FORCE"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("TERM", "dumb")
+    # Wide enough that a sentence is not folded mid-phrase; the tests that
+    # compare a framed message normalise the whitespace anyway.
+    monkeypatch.setenv("COLUMNS", "200")

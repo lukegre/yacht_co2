@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import yaml
 from nicegui.testing import User
 
+from yacht_co2.gui import app
 from yacht_co2.gui.yamlform import load_document, save_document, write_path
 from yacht_co2.manifest import packaged_defaults
 from yacht_co2.userconfig import write_settings
@@ -87,6 +90,27 @@ async def test_a_finished_campaign_offers_what_it_produced(user: User, finished)
     # Already archived and already processed, so neither step offers to redo it.
     await user.should_see("Archived as 10.5281/zenodo.12345")
     await user.should_see("Process again")
+
+
+async def test_what_a_campaign_produced_is_opened_by_the_desktop(user: User, finished, monkeypatch):
+    """Not by a second browser tab: a native window has none to open."""
+    opened: list[tuple[str, str]] = []
+    monkeypatch.setattr(app, "open_file", lambda path: opened.append(("open", Path(path).name)))
+    monkeypatch.setattr(app, "reveal", lambda path: opened.append(("reveal", Path(path).name)))
+
+    await user.open("/")
+    user.find(marker="campaign-2306_fastnet").click()
+    await user.should_see("Interactive page")
+    user.find("Interactive page").click()
+    user.find("Dataset (NetCDF)").click()
+    assert opened == [
+        ("open", "yacht_co2-fastnet_race-2023_07_24-site.html"),
+        ("reveal", "yacht_co2-fastnet_race-2023_07_24-track.nc"),
+    ]
+    # The report is JSON, so it is read in the page rather than handed to
+    # whichever editor claims the extension.
+    user.find("Run report").click()
+    await user.should_see("yacht_co2-fastnet_race-2023_07_24-report.json")
 
 
 async def test_the_manifest_form_shows_the_campaigns_own_settings(user: User, finished):

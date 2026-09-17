@@ -10,9 +10,6 @@ editor changes them anyway.
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
-from pathlib import Path
 
 from nicegui import ui
 
@@ -32,28 +29,12 @@ from ..userconfig import (
 )
 from ..validation import validate_manifest_document, validate_project_document
 from .components import DocumentEditor
+from .opening import reveal
 
 TOKEN_HELP = (
     "Create one at zenodo.org under Applications -> Personal access tokens, "
     "with the deposit:write and deposit:actions scopes."
 )
-
-
-def reveal(path: Path) -> None:
-    """Show a path in the desktop's own file manager.
-
-    The server is this machine, so it can do what the browser cannot: put the
-    configuration directory in front of someone who would not otherwise know
-    where to find it.
-    """
-    command = {
-        "darwin": ["open", str(path)],
-        "win32": ["explorer", str(path)],
-    }.get(sys.platform, ["xdg-open", str(path)])
-    try:
-        subprocess.Popen(command)  # noqa: S603 - a fixed command over a local path
-    except OSError as exc:
-        ui.notify(f"Could not open {path}: {exc}", type="warning")
 
 
 class TokenPanel:
