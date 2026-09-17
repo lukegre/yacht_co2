@@ -320,7 +320,9 @@ def _normalise_raw_object_variables(ds: xr.Dataset) -> list[str]:
     canonical numeric variables are derived separately during ingestion.
     """
     promoted: list[str] = []
-    for name, variable in ds.data_vars.items():
+    for key, variable in ds.data_vars.items():
+        # Xarray keys a dataset by Hashable; every name here is a string.
+        name = str(key)
         if not name.startswith("raw_") or variable.dtype.kind != "O":
             continue
         values = np.asarray(

@@ -20,7 +20,9 @@ def netcdf_encoding(ds: xr.Dataset, complevel: int = 4) -> dict[str, dict[str, A
     cannot be chunked.
     """
     return {
-        name: {"zlib": True, "complevel": complevel}
+        # Xarray keys a dataset by Hashable; every name this package writes is
+        # a string, and the encoding map must be keyed by one.
+        str(name): {"zlib": True, "complevel": complevel}
         for name, array in ds.variables.items()
         if array.dtype.kind not in "OUS" and array.ndim > 0
     }

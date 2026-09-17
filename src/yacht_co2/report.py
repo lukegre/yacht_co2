@@ -211,7 +211,9 @@ def _variables(ds: xr.Dataset) -> list[dict[str, Any]]:
     """
     good = (np.asarray(ds.qc_flag.values, dtype="uint16") == 0) & _seawater(ds)
     entries = []
-    for name, array in sorted(ds.data_vars.items()):
+    for key, array in sorted(ds.data_vars.items()):
+        # Xarray keys a dataset by Hashable; every name here is a string.
+        name = str(key)
         if name.startswith("raw_") and name not in _REPORTED_RAW:
             continue
         if name in _NOT_MEASUREMENTS or array.dims != ("time",):
@@ -221,7 +223,7 @@ def _variables(ds: xr.Dataset) -> list[dict[str, Any]]:
         values = _finite(np.asarray(array.values, dtype=float)[good])
         entries.append(
             {
-                "name": str(name),
+                "name": name,
                 "units": str(array.attrs.get("units", "")),
                 "valid": int(_finite(array.values).size),
                 # "good" counts the QC-good seawater records the stats use.

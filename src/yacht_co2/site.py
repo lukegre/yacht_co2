@@ -114,8 +114,10 @@ def select_variables(ds: xr.Dataset, requested: Sequence[str] | None) -> list[st
     the dataset does not hold is reported and skipped rather than failing a run
     whose data is otherwise complete.
     """
+    # Xarray keys a dataset by Hashable; every name this package writes is a
+    # string, so they are read back as ones.
     candidates = [
-        name
+        str(name)
         for name, arr in ds.data_vars.items()
         if arr.dims == ("time",) and np.issubdtype(arr.dtype, np.number) and name != "qc_flag"
     ]
@@ -204,7 +206,7 @@ def _model(
         # An explicit selection is itself an order of interest, so keep it.
         ordered = candidates
     else:
-        preferred = [
+        preferred: list[str] = [
             name
             for name in (
                 "fco2_seawater",
@@ -287,7 +289,11 @@ def _qc_help(config: dict[str, Any] | None) -> str:
     ):
         if key in config:
             rows.append((label, f"≥ {config[key]}", "flow"))
-    ranges = {"co2": [100, 1000], "watertemp": [-2.5, 45], "salinity": [0, 45]}
+    ranges: dict[str, Sequence[float]] = {
+        "co2": [100, 1000],
+        "watertemp": [-2.5, 45],
+        "salinity": [0, 45],
+    }
     ranges.update(config.get("ranges", {}))
     range_labels = {
         "co2": ("CO₂", ""),
