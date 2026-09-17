@@ -7,7 +7,7 @@ import yaml
 from loguru import logger
 
 from yacht_co2.errors import ManifestError, ProviderError
-from yacht_co2.manifest import build_manifest, load_manifest
+from yacht_co2.manifest import build_manifest, load_manifest, packaged_defaults
 from yacht_co2.pipeline import Pipeline
 from yacht_co2.providers import (
     CMEMSProvider,
@@ -55,6 +55,18 @@ def test_manifest_errors_and_digest(tmp_path):
     good = tmp_path / "good.yaml"
     good.write_text("campaign: {name: Test}\ninputs: {logs: '*.log'}\n")
     assert load_manifest(good).digest == load_manifest(good).digest
+
+
+def test_the_manifest_template_ships_inside_the_package():
+    """A build that dropped the template would leave build-manifest with nothing."""
+    import yacht_co2
+
+    template = packaged_defaults()
+    assert template.is_file()
+    # Resolved through the installed package, not a path walked up to the repo.
+    assert template.parent.parent == Path(yacht_co2.__file__).parent
+    document = yaml.safe_load(template.read_text(encoding="utf-8"))
+    assert {"campaign", "inputs", "phases", "outputs"} <= set(document)
 
 
 def test_build_manifest_uses_zenodo_name_and_processing_defaults(tmp_path):

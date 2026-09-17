@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +18,21 @@ from .validation import Finding, errors, validate_manifest_document
 from .zenodo import CONFIG_NAME as ZENODO_CONFIG_NAME
 
 MANIFEST_NAME = "manifest.yaml"
-DEFAULTS_PATH = Path(__file__).resolve().parents[2] / "examples" / "defaults.yaml"
+DEFAULTS_NAME = "defaults.yaml"
+TEMPLATES_DIRECTORY = "templates"
+
+
+def packaged_defaults() -> Path:
+    """Return the manifest template that ships inside the package.
+
+    The package is asked where its own files live, so the template is found
+    from a checkout, an editable install and an installed wheel alike; walking
+    up from ``__file__`` only ever found a source tree. Wheels are unpacked
+    into directories, so the resource is a real file on disk.
+    """
+    resource = resources.files(__package__).joinpath(TEMPLATES_DIRECTORY, DEFAULTS_NAME)
+    with resources.as_file(resource) as path:
+        return path
 
 
 @dataclass(frozen=True)
@@ -142,8 +157,8 @@ def build_manifest(
 ) -> Path:
     """Build a processing manifest from a folder's ``zenodo.yaml``.
 
-    The generated manifest inherits processing values from
-    ``examples/defaults.yaml``. The campaign ID follows Zenodo's slug rule: an
+    The generated manifest inherits processing values from the packaged
+    ``templates/defaults.yaml``. The campaign ID follows Zenodo's slug rule: an
     explicit slug wins, otherwise the data-folder name is used. A Zenodo
     campaign is preferred as the concise name; an explicit title is accepted
     as a fallback.
@@ -151,7 +166,7 @@ def build_manifest(
     zenodo_path = Path(zenodo).resolve()
     if not zenodo_path.is_file():
         raise ManifestError(f"Zenodo configuration does not exist: {zenodo_path}")
-    defaults_path = Path(defaults).resolve() if defaults is not None else DEFAULTS_PATH
+    defaults_path = Path(defaults).resolve() if defaults is not None else packaged_defaults()
     if not defaults_path.is_file():
         raise ManifestError(f"manifest defaults do not exist: {defaults_path}")
 

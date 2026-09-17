@@ -47,7 +47,9 @@ manifest.
 
 Build one beside an existing `zenodo.yaml`; `campaign.name` comes from its
 campaign (or explicit title), `campaign.date` from its campaign date, and
-`campaign.id` from its slug or the data-folder name. The remaining values come from `examples/defaults.yaml`:
+`campaign.id` from its slug or the data-folder name. The remaining values come
+from the template that ships with the package,
+`src/yacht_co2/templates/defaults.yaml`; `--defaults` points at another file:
 
 ```console
 uv run yacht-co2 build-manifest data/2306_fastnet/zenodo.yaml
