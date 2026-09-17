@@ -7,11 +7,26 @@ represented by flags rather than destructive filtering.
 
 ## Quick start
 
-```console
+```bash
+# make sure that the environment is up to date
 uv sync
-uv run yacht-co2 build-manifest data/2307_fastnet/zenodo.yaml
-uv run yacht-co2 validate data/2307_fastnet/manifest.yaml
-uv run yacht-co2 run data/2307_fastnet/manifest.yaml
+
+# the folder where the data lives - makes it easier to assign this
+FOLDER=data/2307_fastnet
+
+# 1. upload the raw data to zenodo- creates zenodo.yaml in FOLDER 
+uv run zenodo-upload --campaign <name of campaign> --campaign-date <YYYY-MM> $FOLDER
+
+# 2. build a manifest.yaml - specifies how to process, uses reasonable defaults
+uv run yacht-co2 build-manifest $FOLDER/zenodo.yaml
+
+# 3. EDIT THE MANIFEST FILE ACCORDINGLY
+
+# 4. pipeline: merge logs -> rawCO2 to fCO2 -> report -> netCDF -> HTML
+uv run yacht-co2 run $FOLDER/manifest.yaml
+
+# 5. upload new files to zenodo as V2 in the original repo
+uv run zenodo-upload --config $FOLDER/zenodo.yaml $FOLDER
 ```
 
 `run` takes a campaign manifest and treats its folder as the campaign. It
@@ -95,7 +110,7 @@ ID, `inputs.logs` selects files in that record instead of the local filesystem.
 Downloads are cached below `outputs.cache`. `build-manifest` uses the `doi` in
 `zenodo.yaml` as the default repository and fails clearly if no DOI is present.
 
-### Enrichment products
+### Enrichment products (not built yet)
 
 Each `products` entry declares a provider (`cmems`, `era5`, `noaa_mbl`,
 `local`), a product ID, variables, optional padding/tolerances, and whether
