@@ -5,18 +5,18 @@ name: Application
 # that gives all four, and the job that attaches them to a tagged release.
 on:
   push:
-    tags: ["v*"]
-  workflow_dispatch:
-  # Pull requests do not produce a release, but they do prove the bundles still
+    tags: [ "v*" ]
+  workflow_dispatch: # Pull requests do not produce a release, but they do prove the bundles still
+
   # build, which is the half of this that breaks when a dependency moves.
   pull_request:
     paths:
-      - "packaging/**"
-      - "pyproject.toml"
-      - "uv.lock"
-      - "src/yacht_co2/desktop.py"
-      - "src/yacht_co2/gui/**"
-      - ".github/workflows/app.yml"
+    - "packaging/**"
+    - "pyproject.toml"
+    - "uv.lock"
+    - "src/yacht_co2/desktop.py"
+    - "src/yacht_co2/gui/**"
+    - ".github/workflows/app.yml"
 
 jobs:
   build:
@@ -26,39 +26,40 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-14, label: macOS (Apple Silicon) }
-          - { os: macos-15-intel, label: macOS (Intel) }
-          - { os: windows-latest, label: Windows }
-          # The oldest runner still supported: a bundle built against one glibc
-          # will not start against an older one, so the build machine sets the
-          # floor for every machine that can run the result.
-          - { os: ubuntu-22.04, label: Linux }
+        - { os: macos-14, label: macOS (Apple Silicon) }
+        - { os: windows-latest, label: Windows }
+        # The oldest runner still supported: a bundle built against one glibc
+        # will not start against an older one, so the build machine sets the
+        # floor for every machine that can run the result.
+        - { os: ubuntu-22.04, label: Linux }
+        # comment out macos intel because it's slooow
+        # - { os: macos-15-intel, label: macOS (Intel) }
     steps:
-      - uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
-      - uses: astral-sh/setup-uv@v6
-        with: { enable-cache: true }
+    - uses: astral-sh/setup-uv@v6
+      with: { enable-cache: true }
 
-      - name: Install the application and its build tools
-        run: uv sync --locked --extra desktop --group build
+    - name: Install the application and its build tools
+      run: uv sync --locked --extra desktop --group build
 
-      - name: Build
-        run: uv run python packaging/build.py
+    - name: Build
+      run: uv run python packaging/build.py
 
-      - name: Check that it starts
-        # A bundle that builds and then cannot import itself is the failure
-        # this whole file exists to catch, and it is invisible until something
-        # runs it. There is no display on a runner, so the application is asked
-        # for the one thing that exercises the frozen import graph end to end.
-        run: uv run python packaging/smoke.py
+    - name: Check that it starts
+      # A bundle that builds and then cannot import itself is the failure
+      # this whole file exists to catch, and it is invisible until something
+      # runs it. There is no display on a runner, so the application is asked
+      # for the one thing that exercises the frozen import graph end to end.
+      run: uv run python packaging/smoke.py
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: yacht-co2-${{ matrix.os }}
-          path: |
-            dist/*.zip
-            dist/*.tar.gz
-          if-no-files-found: error
+    - uses: actions/upload-artifact@v4
+      with:
+        name: yacht-co2-${{ matrix.os }}
+        path: |
+          dist/*.zip
+          dist/*.tar.gz
+        if-no-files-found: error
 
   release:
     name: Attach to the release
@@ -68,20 +69,20 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            artifacts/*.zip
-            artifacts/*.tar.gz
-          body: |
-            Download the archive for your machine, unpack it, and open
-            `yacht-co2` inside.
+    - uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+        merge-multiple: true
+    - uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          artifacts/*.zip
+          artifacts/*.tar.gz
+        body: |
+          Download the archive for your machine, unpack it, and open
+          `yacht-co2` inside.
 
-            macOS and Windows will both warn that the application is from an
-            unidentified developer, because it is signed by nobody: on macOS,
-            right-click it and choose Open; on Windows, choose More info and
-            then Run anyway. README.md has the detail.
+          macOS and Windows will both warn that the application is from an
+          unidentified developer, because it is signed by nobody: on macOS,
+          right-click it and choose Open; on Windows, choose More info and
+          then Run anyway. README.md has the detail.
