@@ -89,6 +89,9 @@ jobs:
     - name: Upload the release archives
       env:
         GH_TOKEN: ${{ github.token }}
+        # This job downloads artifacts only — there is no checkout — so gh
+        # cannot discover the repository from .git and must be told explicitly.
+        GH_REPO: ${{ github.repository }}
       shell: bash
       run: |
         shopt -s nullglob
