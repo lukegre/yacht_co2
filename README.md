@@ -56,16 +56,66 @@ is driven from Python.
 
 ## Without a terminal
 
-`yacht-co2 gui` opens the same procedure in a browser, for a machine that has
-one person on it and no Python in their hands:
+There are two ways in, and behind both is the same interface and the same five
+steps. Someone with a checkout runs it from there; someone with neither a
+checkout nor Python downloads the application.
+
+### The application
+
+Each release carries a build for macOS, Windows and Linux under
+[Releases](../../releases). Download the one for your machine, unpack it, and
+open `yacht-co2` inside. There is nothing to install and nothing to configure:
+it writes its own `project.yaml` and `manifest.yaml` into your configuration
+directory the first time it runs, and the **Defaults** button edits them.
+
+| Machine | Download | What opens |
+| ------- | -------- | ---------- |
+| macOS, Apple Silicon | `…-macos-arm64.zip` | a window of its own |
+| macOS, Intel | `…-macos-x86_64.zip` | a window of its own |
+| Windows | `…-windows-x86_64.zip` | a window of its own |
+| Linux | `…-linux-x86_64.tar.gz` | your default browser |
+
+Linux gets the browser rather than a window for a reason worth stating: the
+window would be drawn through GTK/WebKit2, a system library whose version
+differs per distribution and which cannot be frozen into a portable bundle. The
+server is the same, it listens on `127.0.0.1` alone, and the pages are
+identical. Anywhere else, `YACHT_CO2_DESKTOP_BROWSER=1` asks for the same
+treatment, which is the escape hatch if a window will not open.
+
+The application is signed by nobody, so both desktop systems will say so the
+first time:
+
+* **macOS** — right-click it and choose **Open**, then **Open** again. A
+  double-click alone will refuse, once, and only the first time.
+* **Windows** — SmartScreen offers **More info**, then **Run anyway**.
+
+It logs everything it does to `logs/desktop.log`, inside the configuration
+directory that [Shared defaults](#shared-defaults) describes — so
+`~/.config/yacht_co2/logs/desktop.log`, or `%APPDATA%\yacht_co2\logs` on
+Windows. That file is the whole story of a run, and the thing to send on when
+something goes wrong.
+
+Two things are deliberately left out of the bundle, to keep the download near
+70 MB rather than past 150: the CMEMS and ERA5 collocation providers. Both need
+credentials and a network to be of any use, and both are loaded only when a
+manifest asks for one — so a manifest that does fails with its own message
+rather than crashing. A campaign that needs them wants the checkout below.
+
+### From a checkout
+
+`yacht-co2 gui` opens the same procedure in a browser:
 
 ```console
 uv sync --extra gui
 uv run yacht-co2 gui
+
+# ... or in a window, as the application does it
+uv sync --extra desktop
+uv run yacht-co2 gui --native
 ```
 
-It serves on `127.0.0.1` only and opens a tab. Pick the folder your campaign
-folders live in, pick a campaign, and work down the five steps above —
+It serves on `127.0.0.1` only. Pick the folder your campaign folders live in,
+pick a campaign, and work down the five steps above —
 archive, build a manifest, check it, process, publish. Each step reads the
 folder to see whether it has already been done, so the page opens on the first
 thing left to do and a campaign can be picked up months later, or on another
@@ -497,3 +547,28 @@ uv run pytest --cov=yacht_co2 --cov-branch
 Offline tests use synthetic provider fixtures and need no credentials. The
 interface is tested through NiceGUI's simulated browser rather than a real one,
 so `tests/gui` needs `uv sync --extra gui` and is skipped without it.
+
+### Building the application
+
+```console
+uv sync --extra desktop --group build
+uv run python packaging/build.py          # --no-archive while iterating
+uv run python packaging/smoke.py          # start what was built and check it answers
+```
+
+`packaging/` divides as follows: `launcher.py` is the script that gets frozen,
+`yacht_co2.spec` says what PyInstaller cannot work out by itself, `icon.py`
+draws the icon at build time rather than storing rendered copies, `build.py`
+runs the lot and packs the result into `dist/`, and `smoke.py` starts what came
+out.
+
+PyInstaller freezes for the machine it runs on, so a Windows application is
+built on Windows and a macOS one on macOS; `.github/workflows/app.yml` is the
+matrix that produces all four and attaches them to a tagged release. What
+`smoke.py` catches is the failure the test suite structurally cannot: a module
+the spec forgot, which imports perfectly well in a checkout and is simply
+absent from the bundle. Run it after any dependency change.
+
+The build leaves everything it touches in `build/` and `dist/`, including
+PyInstaller's own cache, so deleting those two directories is the whole of
+starting again.

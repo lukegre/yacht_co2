@@ -31,8 +31,23 @@ gui = [
     "nicegui>=2.0",
     "ruamel-yaml>=0.18",
 ]
+# The double-clickable application. pywebview draws the window using whatever
+# the platform already has -- WebKit on macOS, WebView2 on Windows -- and pulls
+# its own bindings in for each. Linux is deliberately absent: its binding is
+# GTK/WebKit2, a system library that cannot be frozen into a portable bundle,
+# so the Linux application serves the same pages to the default browser.
+desktop = [
+    "nicegui>=2.0",
+    "ruamel-yaml>=0.18",
+    "pywebview>=5.3 ; sys_platform != 'linux'",
+]
 
 [dependency-groups]
+# Only needed to *build* the application; the application itself needs none of it.
+build = [
+  "pyinstaller>=6.16",
+  "pyinstaller-hooks-contrib>=2025.8",
+]
 dev = [
   "coverage>=7.6",
   "mypy>=1.11",
@@ -44,6 +59,7 @@ dev = [
 
 [project.scripts]
 yacht-co2 = "yacht_co2.cli:app"
+yacht-co2-desktop = "yacht_co2.desktop:main"
 zenodo-upload = "yacht_co2.zenodo:app"
 
 [build-system]

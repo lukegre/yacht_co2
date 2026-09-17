@@ -213,6 +213,10 @@ def gui(
     ),
     port: int = typer.Option(8080, help="Port to serve on."),
     show: bool = typer.Option(True, help="Open a browser window on start."),
+    native: bool = typer.Option(
+        False,
+        help="Draw the pages in a window of their own, as the packaged application does.",
+    ),
 ) -> None:
     """Open the whole procedure in a browser, for someone who does not use a terminal.
 
@@ -228,6 +232,17 @@ def gui(
             f"the graphical interface needs its extra dependencies ({exc}); "
             "install them with: uv sync --extra gui"
         ) from exc
+    if native:
+        from .desktop import can_open_a_window
+
+        if not can_open_a_window():
+            raise typer.BadParameter(
+                "a window needs pywebview, and on Linux a display as well; "
+                "install it with: uv sync --extra desktop"
+            )
+        # A window finds its own port, the same as the packaged application.
+        launch(data_root=data_root, port=None, show=False, native=True)
+        return
     launch(data_root=data_root, port=port, show=show)
 
 

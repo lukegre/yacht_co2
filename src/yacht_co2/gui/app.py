@@ -554,10 +554,32 @@ def register_pages() -> None:
     app.get("/artifact")(serve_artifact)
 
 
+#: The window the packaged application opens at, wide enough for the two
+#: columns the workbench lays its steps out in.
+WINDOW_SIZE = (1180, 860)
+
+
 def launch(
-    *, data_root: Path | None = None, port: int = 8080, show: bool = True, reload: bool = False
+    *,
+    data_root: Path | None = None,
+    port: int | None = 8080,
+    show: bool = True,
+    reload: bool = False,
+    native: bool = False,
 ) -> None:
-    """Serve the interface on this machine and, unless told not to, open it."""
+    """Serve the interface on this machine and, unless told not to, open it.
+
+    ``native`` draws the pages in a window of their own rather than in a
+    browser tab, which is what the packaged application does: the server is the
+    same, and still listens on this machine alone, but the person running it
+    never sees a URL. It needs ``pywebview``; without it NiceGUI exits, so the
+    caller is expected to have checked -- :func:`yacht_co2.desktop.can_open_a_window`
+    is that check.
+
+    ``port`` of ``None`` lets NiceGUI find a free one, which is what a
+    double-clicked application wants: it has no way to report that 8080 was
+    taken, and nothing needs to know the number.
+    """
     if data_root is not None:
         write_settings({**read_settings(), "data_root": str(Path(data_root).resolve())})
     register_pages()
@@ -568,7 +590,11 @@ def launch(
         port=port,
         title="yacht-co2",
         favicon="🌊",
-        show=show,
+        # A native window is the showing, so asking for a browser too would
+        # open the same page twice.
+        show=show and not native,
+        native=native,
+        window_size=WINDOW_SIZE if native else None,
         reload=reload,
         uvicorn_logging_level="warning",
         show_welcome_message=False,
