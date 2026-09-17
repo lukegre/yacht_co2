@@ -1,4 +1,4 @@
-"""Pieces the pages share: validation findings, and a validated file editor."""
+"""Pieces the pages share: showing a product, findings, and a validated editor."""
 
 from __future__ import annotations
 
@@ -10,10 +10,46 @@ from nicegui import ui
 
 from ..errors import YachtCO2Error
 from ..validation import Finding, errors
+from .opening import open_file, reveal
 from .yamlform import dump_text, load_document, parse_document, plain, save_document
 
 SEVERITY_ICON = {"error": "error", "warning": "warning"}
 SEVERITY_CLASS = {"error": "text-red-600", "warning": "text-amber-600"}
+
+
+def show_artifact(path: Path) -> None:
+    """Put one of a campaign's products in front of the person, by its kind.
+
+    The three products are looked at in three different ways. A page is one
+    self-contained file and belongs in a browser, however the workbench itself
+    is being drawn. A report is JSON, which the desktop would hand to whichever
+    editor claims the extension -- or to nothing at all -- so it is read here.
+    A dataset is neither: no browser displays it, so showing it means saying
+    where it is.
+    """
+    suffix = path.suffix.lower()
+    if suffix in {".html", ".htm"}:
+        open_file(path)
+    elif suffix == ".json":
+        show_json(path)
+    else:
+        reveal(path)
+
+
+def show_json(path: Path) -> None:
+    """Read a JSON file in the workbench itself, rather than handing it away."""
+    try:
+        text = path.read_text()
+    except OSError as exc:
+        ui.notify(f"Could not read {path}: {exc}", type="warning")
+        return
+    with ui.dialog() as dialog, ui.card().classes("w-full max-w-3xl"):
+        ui.label(path.name).classes("font-medium")
+        ui.code(text, language="json").classes("w-full max-h-[60vh] overflow-auto text-xs")
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Show in file manager", on_click=lambda: reveal(path)).props("flat")
+            ui.button("Close", on_click=dialog.close).props("flat")
+    dialog.open()
 
 
 def findings_panel(findings: list[Finding], *, clean: str = "No problems found.") -> None:

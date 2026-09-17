@@ -2,9 +2,11 @@
 
 A campaign may be processed by someone who never opens this checkout, so the
 defaults they are expected to change cannot live inside it. One directory --
-``~/.config/yacht_co2``, or ``%APPDATA%\\yacht_co2`` on Windows -- holds a copy
-of each of the two documents a run reads before it reads any data:
+the platform's standard per-user configuration directory holds a copy of each
+document a run reads before it reads any data:
 
+``gui.yaml``
+    interface preferences, including the folder opened on launch.
 ``project.yaml``
     vessel, instrument and archival identity, shared by every campaign.
 ``manifest.yaml``
@@ -24,6 +26,7 @@ never changes what an existing checkout already does.
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -48,15 +51,21 @@ TOKEN_VARIABLES = {
 
 
 def resolve_config_dir(
-    os_name: str, environ: Mapping[str, str], home: Path
+    os_name: str,
+    environ: Mapping[str, str],
+    home: Path,
+    *,
+    sys_platform: str | None = None,
 ) -> Path:
     """Work out where this platform keeps a user's configuration.
 
     The platform is an argument rather than something read here, because
     ``pathlib`` binds its own flavour to ``os.name``: a test that patched the
-    real one would be unable to build a path at all. Windows uses ``%APPDATA%``
-    and everything else follows the XDG convention, so macOS and Linux agree on
-    ``~/.config/yacht_co2``.
+    real one would be unable to build a path at all. Windows uses ``%APPDATA%``,
+    macOS uses ``~/Library/Application Support``, and Linux follows XDG.
+
+    ``sys_platform`` is explicit for the same reason as ``os_name`` and remains
+    optional for callers which only need to exercise the Windows/Linux split.
     """
     override = environ.get(CONFIG_DIR_ENV, "").strip()
     if override:
@@ -64,6 +73,8 @@ def resolve_config_dir(
     if os_name == "nt":
         base = environ.get("APPDATA", "").strip()
         return (Path(base) if base else home / "AppData" / "Roaming") / APP_DIRECTORY
+    if sys_platform == "darwin":
+        return home / "Library" / "Application Support" / APP_DIRECTORY
     base = environ.get("XDG_CONFIG_HOME", "").strip()
     return (Path(base).expanduser() if base else home / ".config") / APP_DIRECTORY
 
@@ -74,7 +85,7 @@ def config_dir() -> Path:
     ``YACHT_CO2_CONFIG_DIR`` overrides the platform location outright, which is
     how a test -- or a shared installation -- keeps its configuration to itself.
     """
-    return resolve_config_dir(os.name, os.environ, Path.home())
+    return resolve_config_dir(os.name, os.environ, Path.home(), sys_platform=sys.platform)
 
 
 def config_file(name: str) -> Path:

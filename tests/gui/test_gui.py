@@ -8,7 +8,7 @@ import pytest
 import yaml
 from nicegui.testing import User
 
-from yacht_co2.gui import app
+from yacht_co2.gui import components
 from yacht_co2.gui.yamlform import load_document, save_document, write_path
 from yacht_co2.manifest import packaged_defaults
 from yacht_co2.userconfig import write_settings
@@ -32,6 +32,12 @@ async def test_the_page_lists_the_campaign_folders_it_finds(user: User, campaign
     await user.should_see("2306_fastnet")
     # No folder is chosen yet, so there are no steps to show.
     await user.should_not_see(marker="step-archive")
+
+
+async def test_progress_is_collapsed_by_default(user: User, campaigns):
+    await user.open("/")
+    progress = _one(user, "progress-log")
+    assert progress.value is False
 
 
 async def test_choosing_a_campaign_shows_every_step(user: User, campaigns):
@@ -95,8 +101,12 @@ async def test_a_finished_campaign_offers_what_it_produced(user: User, finished)
 async def test_what_a_campaign_produced_is_opened_by_the_desktop(user: User, finished, monkeypatch):
     """Not by a second browser tab: a native window has none to open."""
     opened: list[tuple[str, str]] = []
-    monkeypatch.setattr(app, "open_file", lambda path: opened.append(("open", Path(path).name)))
-    monkeypatch.setattr(app, "reveal", lambda path: opened.append(("reveal", Path(path).name)))
+    monkeypatch.setattr(
+        components, "open_file", lambda path: opened.append(("open", Path(path).name))
+    )
+    monkeypatch.setattr(
+        components, "reveal", lambda path: opened.append(("reveal", Path(path).name))
+    )
 
     await user.open("/")
     user.find(marker="campaign-2306_fastnet").click()

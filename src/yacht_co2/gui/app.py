@@ -23,10 +23,11 @@ from ..userconfig import read_settings, read_token, write_settings
 from ..workflow import CampaignStatus, campaign_status, find_campaigns, run_campaign
 from ..zenodo import CONFIG_NAME as ZENODO_CONFIG_NAME
 from ..zenodo import upload_raw_folder
+from .components import show_artifact
 from .folders import FolderPicker
 from .jobs import RUNNER
 from .manifestform import ManifestForm
-from .opening import open_file, reveal
+from .records import RecordPanel
 from .settings import settings_panels
 
 #: The kinds of notification the page raises, as Quasar names them.
@@ -39,37 +40,6 @@ STEPS = (
     "Process the campaign",
     "Publish the products",
 )
-
-
-def _show_page(path: Path) -> None:
-    """Put a built page in front of the default browser.
-
-    The page is one self-contained file, so the browser can be handed it
-    directly; it is also the one artifact that is meant to be looked at rather
-    than kept, which is why it is opened and not merely pointed at.
-    """
-    open_file(path)
-
-
-def _show_report(path: Path) -> None:
-    """Show a run report in the workbench itself.
-
-    The report is JSON, which the desktop would hand to whichever editor claims
-    the extension -- or to nothing at all. Reading it here is what "show the
-    report" means, and the file is still one button away in its folder.
-    """
-    try:
-        text = path.read_text()
-    except OSError as exc:
-        ui.notify(f"Could not read {path}: {exc}", type="warning")
-        return
-    with ui.dialog() as dialog, ui.card().classes("w-full max-w-3xl"):
-        ui.label(path.name).classes("font-medium")
-        ui.code(text, language="json").classes("w-full max-h-[60vh] overflow-auto text-xs")
-        with ui.row().classes("w-full justify-end gap-2"):
-            ui.button("Show in file manager", on_click=lambda: reveal(path)).props("flat")
-            ui.button("Close", on_click=dialog.close).props("flat")
-    dialog.open()
 
 
 def archive(folder: Path, **options: Any) -> dict[str, Any]:
@@ -134,6 +104,11 @@ class Workbench:
         self._build_header()
         with ui.column().classes("w-full max-w-5xl mx-auto p-4 gap-4"):
             self._chooser()
+            RecordPanel(
+                data_root=lambda: self.data_root,
+                start=self._start_later,
+                on_imported=self._select,
+            )
             self._steps()
         self._build_log()
         ui.timer(0.3, self._pump)
@@ -147,21 +122,27 @@ class Workbench:
                 ui.label("underway CO2, from raw logs to a published record").classes(
                     "text-sm opacity-90"
                 )
-            ui.button("Defaults", icon="settings", on_click=self._open_settings).props(
-                "flat no-caps"
-            )
+            ui.button(icon="settings", on_click=self._open_settings).props(
+                "flat round aria-label=Settings"
+            ).mark("settings-menu").tooltip("Settings")
 
     def _open_settings(self) -> None:
         with ui.dialog().props("full-width") as dialog, ui.card().classes("w-full"):
             with ui.column().classes("w-full gap-3"):
-                settings_panels(on_saved=self.refresh)
+                settings_panels(
+                    data_root=self.data_root,
+                    on_data_root_changed=self._apply_root,
+                    on_saved=self.refresh,
+                )
                 ui.button("Close", on_click=dialog.close).props("flat")
         dialog.open()
 
     def _build_log(self) -> None:
         with ui.footer().classes("bg-gray-900 text-gray-100 p-0"):
-            with ui.expansion("Progress", icon="terminal", value=True).classes(
-                "w-full text-gray-100"
+            with (
+                ui.expansion("Progress", icon="terminal", value=False)
+                .classes("w-full text-gray-100")
+                .mark("progress-log")
             ) as self.log_panel:
                 self.log = ui.log(max_lines=2000).classes(
                     "w-full h-56 bg-gray-900 text-gray-100 text-xs font-mono"
@@ -245,8 +226,12 @@ class Workbench:
         self.picker.open_at(self.data_root, self._set_root)
 
     def _set_root(self, folder: Path) -> None:
-        self.data_root = folder
         write_settings({**read_settings(), "data_root": str(folder)})
+        self._apply_root(folder)
+
+    def _apply_root(self, folder: Path) -> None:
+        """Use an already-persisted data root in this browser tab."""
+        self.data_root = folder
         self.folder = None
         self.refresh()
 
@@ -268,12 +253,15 @@ class Workbench:
         work: Callable[[], Any],
         *,
         outcome: Callable[[Any], tuple[str, Notification]] | None = None,
+        then: Callable[[Any], None] | None = None,
     ) -> None:
         """Run one step on a worker thread, then show what it left behind.
 
         ``outcome`` reads the step's own result, because a step that finished
         is not the same as a step that did something: an upload into a record
-        awaiting review completes perfectly and archives nothing.
+        awaiting review completes perfectly and archives nothing. ``then`` is
+        handed that same result once the step has succeeded, for whatever
+        started it to show what it now has.
         """
         if RUNNER.busy:
             ui.notify("Another step is still running.", type="warning")
@@ -294,6 +282,8 @@ class Workbench:
             else (f"{name} finished.", cast(Notification, "positive"))
         )
         ui.notify(message, type=kind, timeout=8000 if kind == "warning" else None)
+        if then is not None:
+            then(state.result)
 
     # -- the five steps -------------------------------------------------
 
@@ -327,11 +317,14 @@ class Workbench:
         assert status is not None
         if not status.is_uploaded:
             return 0
+        # A folder downloaded from a published record has the products before
+        # it has a manifest, and someone who downloaded them came to look at
+        # them: that is the last step's business rather than the second's.
+        if status.is_processed:
+            return 4
         if not status.has_manifest:
             return 1
-        if not status.is_processed:
-            return 2
-        return 4
+        return 2
 
     def _step_archive(self, status: CampaignStatus) -> None:
         ui.label(
@@ -368,7 +361,7 @@ class Workbench:
 
         def upload(dry_run: bool) -> None:
             if not read_token(sandbox=bool(sandbox.value)) and not dry_run:
-                token_note.set_text("No Zenodo token stored yet. Add one under Defaults.")
+                token_note.set_text("No Zenodo token stored yet. Add one under Settings.")
                 token_note.classes(replace="text-sm text-red-600")
                 return
             if not (name.value or "").strip() or not (date.value or "").strip():
@@ -505,9 +498,10 @@ class Workbench:
         work: Callable[[], Any],
         *,
         outcome: Callable[[Any], tuple[str, Notification]] | None = None,
+        then: Callable[[Any], None] | None = None,
     ) -> None:
         """Start a step from a synchronous handler."""
-        ui.timer(0, lambda: self._start(name, work, outcome=outcome), once=True)
+        ui.timer(0, lambda: self._start(name, work, outcome=outcome, then=then), once=True)
 
     def _done(self, message: str) -> None:
         with ui.row().classes("items-center gap-2"):
@@ -538,20 +532,20 @@ class Workbench:
         same.
         """
         built = [
-            ("Interactive page", status.site, "public", _show_page),
-            ("Dataset (NetCDF)", status.track, "dataset", reveal),
-            ("Run report", status.report, "description", _show_report),
+            ("Interactive page", status.site, "public"),
+            ("Dataset (NetCDF)", status.track, "dataset"),
+            ("Run report", status.report, "description"),
         ]
         built = [entry for entry in built if entry[1] is not None]
         if not built:
             return
         with ui.row().classes("gap-2 flex-wrap"):
-            for label, path, icon, show in built:
+            for label, path, icon in built:
                 assert path is not None
                 ui.button(
                     label,
                     icon=icon,
-                    on_click=lambda path=path, show=show: show(path),
+                    on_click=lambda path=path: show_artifact(path),
                 ).props("flat dense")
 
 

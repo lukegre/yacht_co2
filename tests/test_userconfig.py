@@ -31,13 +31,19 @@ def test_unix_keeps_its_defaults_under_dot_config(tmp_path):
     )
 
 
+def test_macos_uses_application_support(tmp_path):
+    home = tmp_path / "home"
+    assert (
+        resolve_config_dir("posix", {}, home, sys_platform="darwin")
+        == home / "Library" / "Application Support" / "yacht_co2"
+    )
+
+
 def test_windows_keeps_its_defaults_where_windows_keeps_them(tmp_path):
     home = tmp_path / "home"
     assert resolve_config_dir("nt", {}, home) == home / "AppData" / "Roaming" / "yacht_co2"
     roaming = tmp_path / "AppData" / "Roaming"
-    assert (
-        resolve_config_dir("nt", {"APPDATA": str(roaming)}, home) == roaming / "yacht_co2"
-    )
+    assert resolve_config_dir("nt", {"APPDATA": str(roaming)}, home) == roaming / "yacht_co2"
 
 
 def test_the_environment_overrides_the_platform_location(tmp_path):

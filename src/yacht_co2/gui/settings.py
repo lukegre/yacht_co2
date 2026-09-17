@@ -1,4 +1,4 @@
-"""The defaults page: what every campaign inherits, and the Zenodo token.
+"""Application, project, and manifest defaults, plus the Zenodo token.
 
 Three things outlive any one campaign -- who the vessel and its crew are, how
 observations are processed by default, and the credential that archives them --
@@ -10,6 +10,8 @@ editor changes them anyway.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
+from pathlib import Path
 
 from nicegui import ui
 
@@ -19,22 +21,70 @@ from ..userconfig import (
     MANIFEST_DEFAULTS_NAME,
     PROJECT_NAME,
     SECRETS_NAME,
+    SETTINGS_NAME,
     TOKEN_VARIABLES,
     config_dir,
     config_file,
     packaged_project_defaults,
     read_secrets,
+    read_settings,
     seed_config_dir,
+    write_settings,
     write_token,
 )
 from ..validation import validate_manifest_document, validate_project_document
 from .components import DocumentEditor
+from .folders import FolderPicker
 from .opening import reveal
 
 TOKEN_HELP = (
     "Create one at zenodo.org under Applications -> Personal access tokens, "
     "with the deposit:write and deposit:actions scopes."
 )
+
+
+class GuiDefaultsPanel:
+    """Edit preferences belonging to the interface rather than a campaign."""
+
+    def __init__(
+        self,
+        data_root: Path,
+        on_data_root_changed: Callable[[Path], None] | None = None,
+    ) -> None:
+        self.data_root = Path(data_root).expanduser()
+        self.on_data_root_changed = on_data_root_changed
+        self.picker = FolderPicker(
+            self.data_root,
+            title="Default campaign folder",
+        )
+
+        with ui.column().classes("w-full gap-3"):
+            ui.label(
+                "The workbench opens this folder on each launch and looks for campaign "
+                "folders inside it. You can still change it from the main screen."
+            ).classes("text-sm text-gray-600")
+            ui.label(str(config_file(SETTINGS_NAME))).classes("text-xs text-gray-500 break-all")
+            with ui.card().classes("w-full"):
+                ui.label("Default campaign folder").classes("font-medium")
+                self.folder_label = ui.label(str(self.data_root)).classes(
+                    "text-sm text-gray-600 break-all"
+                )
+                ui.button(
+                    "Change folder",
+                    icon="folder_open",
+                    on_click=self._pick,
+                ).props("flat dense").mark("change-gui-data-root")
+
+    def _pick(self) -> None:
+        self.picker.open_at(self.data_root, self._save)
+
+    def _save(self, folder: Path) -> None:
+        self.data_root = folder
+        write_settings({**read_settings(), "data_root": str(folder)})
+        self.folder_label.set_text(str(folder))
+        if self.on_data_root_changed is not None:
+            self.on_data_root_changed(folder)
+        ui.notify("Saved GUI defaults.", type="positive")
 
 
 class TokenPanel:
@@ -111,13 +161,21 @@ class TokenPanel:
         ui.notify("Token removed.", type="info")
 
 
-def settings_panels(on_saved=None) -> None:
-    """Build the three defaults panels inside the caller's container."""
+def settings_panels(
+    *,
+    data_root: Path | None = None,
+    on_data_root_changed: Callable[[Path], None] | None = None,
+    on_saved: Callable[[], None] | None = None,
+) -> None:
+    """Build the user-level settings panels inside the caller's container."""
     created = seed_config_dir()
+    configured_root = Path(
+        data_root or read_settings().get("data_root") or Path.home()
+    ).expanduser()
 
     with ui.row().classes("w-full items-center justify-between"):
         with ui.column().classes("gap-0"):
-            ui.label("Shared defaults").classes("text-lg font-medium")
+            ui.label("Settings").classes("text-lg font-medium")
             ui.label(str(config_dir())).classes("text-xs text-gray-500 break-all")
         ui.button(
             "Show in file manager", icon="folder_open", on_click=lambda: reveal(config_dir())
@@ -131,10 +189,13 @@ def settings_panels(on_saved=None) -> None:
         ).classes("text-sm text-blue-700")
 
     with ui.tabs().classes("w-full") as tabs:
-        project_tab = ui.tab("Vessel and archive")
-        manifest_tab = ui.tab("Processing defaults")
-        token_tab = ui.tab("Zenodo token")
-    with ui.tab_panels(tabs, value=project_tab).classes("w-full"):
+        gui_tab = ui.tab("GUI")
+        project_tab = ui.tab("Project")
+        manifest_tab = ui.tab("Manifest")
+        token_tab = ui.tab("Zenodo")
+    with ui.tab_panels(tabs, value=gui_tab).classes("w-full"):
+        with ui.tab_panel(gui_tab):
+            GuiDefaultsPanel(configured_root, on_data_root_changed)
         with ui.tab_panel(project_tab):
             editor = DocumentEditor(
                 config_file(PROJECT_NAME),

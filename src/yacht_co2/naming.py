@@ -12,6 +12,7 @@ underscore, so ``Fastnet Race`` on ``2023-07-24`` reads as
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 PREFIX = "yacht_co2"
 
@@ -43,3 +44,65 @@ def output_stem(campaign: str, campaign_date: str, kind: str) -> str:
 def output_name(campaign: str, campaign_date: str, kind: str, extension: str) -> str:
     """Name one artifact of a campaign, extension included."""
     return f"{output_stem(campaign, campaign_date, kind)}.{extension.lstrip('.')}"
+
+
+#: The kinds of artifact a campaign run produces, other than the environmental
+#: products, which are named ``product-<provider>``.
+ARTIFACT_KINDS = ("track", "report", "site", "video")
+
+# A date field is the one field of an artifact name whose shape is known: it is
+# an ISO date, a month or a year with every hyphen collapsed to an underscore.
+_DATE_FIELD_RE = re.compile(r"\d{4}(?:_\d{2}(?:_\d{2})?)?")
+
+
+@dataclass(frozen=True)
+class ArtifactName:
+    """The fields an artifact name was built from.
+
+    ``campaign`` and ``campaign_date`` are the slugs as they appear in the
+    name, not the values they were made from: slugging is lossy, so
+    ``Fastnet Race`` cannot be recovered from ``fastnet_race`` -- only
+    something that slugs to it again.
+    """
+
+    campaign: str
+    campaign_date: str
+    kind: str
+    extension: str
+
+    @property
+    def iso_date(self) -> str:
+        """The campaign date as it was written before it was slugged.
+
+        The date is the one field whose original form is recoverable: every
+        separator in an ISO date is a hyphen, so undoing the collapse is
+        unambiguous.
+        """
+        return self.campaign_date.replace("_", "-")
+
+
+def parse_output_name(name: str) -> ArtifactName | None:
+    """Read an artifact name back into the fields :func:`output_name` built it from.
+
+    Returns ``None`` for anything this package did not name, which is how a
+    record's own raw logs and a reader's stray notes are told apart from its
+    products.
+    """
+    stem, separator, extension = name.rpartition(".")
+    if not separator or not stem or not extension:
+        return None
+    prefix, separator, rest = stem.partition("-")
+    if prefix != PREFIX or not separator:
+        return None
+    fields = rest.split("-")
+    if len(fields) < 2 or not fields[0]:
+        return None
+    # The date is left out of a name whose campaign has none, so the second
+    # field is the date only when it reads as one and something follows it.
+    if len(fields) > 2 and _DATE_FIELD_RE.fullmatch(fields[1]):
+        campaign_date, kind_fields = fields[1], fields[2:]
+    else:
+        campaign_date, kind_fields = "", fields[1:]
+    if not all(kind_fields):
+        return None
+    return ArtifactName(fields[0], campaign_date, "-".join(kind_fields), extension)

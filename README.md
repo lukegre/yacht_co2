@@ -66,7 +66,7 @@ Each release carries a build for macOS, Windows and Linux under
 [Releases](../../releases). Download the one for your machine, unpack it, and
 open `yacht-co2` inside. There is nothing to install and nothing to configure:
 it writes its own `project.yaml` and `manifest.yaml` into your configuration
-directory the first time it runs, and the **Defaults** button edits them.
+directory the first time it runs, and the settings cog edits them.
 
 | Machine | Download | What opens |
 | ------- | -------- | ---------- |
@@ -135,19 +135,49 @@ round-tripping writer, so the comments that explain each value survive being
 edited, and the sections the form does not cover (`products`, `atmosphere`,
 `site_options`) are left exactly as they were.
 
+### Opening a published record
+
+A campaign does not have to be on this machine to be worked on. **Open a
+published record** takes a Zenodo DOI — or a `doi.org` link, a record URL, or a
+bare record id — and says what that record holds before anything is downloaded:
+the products this package wrote, named one by one, and the raw logs, counted.
+
+Either can then be brought down on command, into a campaign folder under the
+same data root as the rest:
+
+* **Download the products** fetches the interactive page, the dataset and the
+  run report as they were published. The folder is then an ordinary finished
+  campaign, and each product is one click from being opened.
+* **Download the raw logs** fetches what the campaign was measured as, and
+  writes the record's DOI into the folder's `zenodo.yaml` — so the five steps
+  pick it up at *build a manifest* and process it again from there.
+
+Every download is checked against the size and checksum Zenodo publishes, and a
+file already on disk that still matches is left alone: a published record is
+immutable, so nothing in it is ever fetched twice.
+
+The campaign name and date are asked for, because they name every file in the
+folder and so have to match the ones the record was published under. They are
+read back from the record where it says what they are — from its `collected`
+date, and from the names of the products themselves — and left to be filled in
+where it does not. A folder that already has a `zenodo.yaml` keeps it: the
+download adds files and changes nothing the folder already says about itself.
+
 ### Shared defaults
 
-The **Defaults** button edits the two documents every campaign inherits, kept
-in your own configuration directory rather than in a checkout:
+The settings cog edits the GUI preference and two documents every campaign
+inherits, kept in your own configuration directory rather than in a checkout:
 
 | File | Holds |
 | ---- | ----- |
+| `gui.yaml` | the campaign folder the workbench opens on each launch |
 | `project.yaml` | vessel and instrument identity, and the Zenodo metadata every record is built from |
 | `manifest.yaml` | the processing template `build-manifest` starts a new campaign from |
 | `.env` | your Zenodo token, written readable only by you |
 
-The directory is `~/.config/yacht_co2` (`$XDG_CONFIG_HOME` is honoured) and
-`%APPDATA%\yacht_co2` on Windows; `YACHT_CO2_CONFIG_DIR` overrides both. Both
+The directory is `~/Library/Application Support/yacht_co2` on macOS,
+`~/.config/yacht_co2` on Linux (`$XDG_CONFIG_HOME` is honoured), and
+`%APPDATA%\yacht_co2` on Windows; `YACHT_CO2_CONFIG_DIR` overrides all three. Both
 YAML files are seeded from the packaged templates on first launch and never
 overwritten afterwards.
 

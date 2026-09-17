@@ -9,6 +9,7 @@ from yacht_co2.userconfig import (
     MANIFEST_DEFAULTS_NAME,
     PROJECT_NAME,
     config_file,
+    read_settings,
     write_settings,
     write_token,
 )
@@ -22,8 +23,8 @@ def _a_data_root(tmp_path):
 async def test_opening_the_defaults_seeds_both_templates(user: User):
     assert not config_file(PROJECT_NAME).exists()
     await user.open("/")
-    user.find("Defaults").click()
-    await user.should_see("Shared defaults")
+    user.find(marker="settings-menu").click()
+    await user.should_see("Settings")
     await user.should_see("Started you off with a copy of each template")
     assert config_file(PROJECT_NAME).is_file()
     assert config_file(MANIFEST_DEFAULTS_NAME).is_file()
@@ -31,7 +32,8 @@ async def test_opening_the_defaults_seeds_both_templates(user: User):
 
 async def test_the_seeded_project_file_says_what_is_still_missing(user: User):
     await user.open("/")
-    user.find("Defaults").click()
+    user.find(marker="settings-menu").click()
+    user.find("Project").click()
     # The template ships without creators on purpose, so that an unedited copy
     # cannot archive a record under a placeholder name.
     await user.should_see("zenodo.creators")
@@ -44,8 +46,8 @@ async def test_a_missing_token_is_reported_without_ever_showing_one(user: User, 
     write_token("a-real-looking-token")
 
     await user.open("/")
-    user.find("Defaults").click()
-    user.find("Zenodo token").click()
+    user.find(marker="settings-menu").click()
+    user.find("Zenodo").click()
     await user.should_see("Stored. Paste a new one to replace it.")
     await user.should_see("Not set. Archiving needs it.")
     await user.should_not_see("a-real-looking-token")
@@ -54,8 +56,8 @@ async def test_a_missing_token_is_reported_without_ever_showing_one(user: User, 
 async def test_an_exported_token_is_named_as_the_one_in_use(user: User, monkeypatch):
     monkeypatch.setenv("ZENODO_ACCESS_TOKEN", "from-the-shell")
     await user.open("/")
-    user.find("Defaults").click()
-    user.find("Zenodo token").click()
+    user.find(marker="settings-menu").click()
+    user.find("Zenodo").click()
     await user.should_see("Set in the environment as ZENODO_ACCESS_TOKEN; that one is used.")
 
 
@@ -68,8 +70,9 @@ def _one(user: User, marker: str):
 
 async def test_saving_an_edited_project_file_writes_it_back(user: User):
     await user.open("/")
-    user.find("Defaults").click()
-    await user.should_see("Shared defaults")
+    user.find(marker="settings-menu").click()
+    user.find("Project").click()
+    await user.should_see("Settings")
 
     _one(user, "editor-defaults-project").set_value(
         "platform:\n  vessel_name: Yoroshiku\n"
@@ -86,10 +89,28 @@ async def test_saving_an_edited_project_file_writes_it_back(user: User):
 
 async def test_a_document_that_would_break_a_run_cannot_be_saved(user: User):
     await user.open("/")
-    user.find("Defaults").click()
-    await user.should_see("Shared defaults")
+    user.find(marker="settings-menu").click()
+    user.find("Project").click()
+    await user.should_see("Settings")
 
     _one(user, "editor-defaults-project").set_value("platform: not-a-mapping\n")
     await user.should_see("must be a mapping, not str")
     # The save button is disabled rather than the error being raised later.
     assert _one(user, "save-defaults-project").enabled is False
+
+
+async def test_gui_default_can_be_changed_from_settings(user: User, tmp_path):
+    original = tmp_path / "original"
+    voyages = original / "voyages"
+    voyages.mkdir(parents=True)
+    write_settings({"data_root": str(original)})
+
+    await user.open("/")
+    user.find(marker="settings-menu").click()
+    await user.should_see("Default campaign folder")
+    user.find(marker="change-gui-data-root").click()
+    user.find(marker="folder-voyages").click()
+    user.find("Use this folder").click()
+
+    assert read_settings()["data_root"] == str(voyages)
+    await user.should_see(str(voyages))
