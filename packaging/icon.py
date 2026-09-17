@@ -73,12 +73,18 @@ def _compose(size: int) -> Image.Image:
     canvas.rounded_rectangle(tile, radius=radius, fill=NAVY)
 
     # The sea is a band along the bottom, low enough to leave the trace above
-    # it a clear field. Its top edge is flat -- a wave there as well would be
-    # one wiggle more than survives being made small -- so it is drawn as a
-    # rounded rectangle for the tile's bottom corners and squared off on top.
+    # it a clear field, with a flat top -- a wave there as well would be one
+    # wiggle more than survives being made small. Asking rounded_rectangle for
+    # the tile's own corner radius on a band this shallow overflows its
+    # bounding box and leaves square notches poking out past the curve, so
+    # the band is painted through a mask cut from the tile's own shape
+    # instead: its bottom corners then follow the tile exactly, whatever the
+    # band's height.
     horizon = inset + (size - 2 * inset) * 0.70
-    canvas.rounded_rectangle((inset, horizon, size - inset, size - inset), radius=radius, fill=SEA)
-    canvas.rectangle((inset, horizon, size - inset, horizon + radius), fill=SEA)
+    sea_mask = Image.new("L", (size, size), 0)
+    ImageDraw.Draw(sea_mask).rounded_rectangle(tile, radius=radius, fill=255)
+    ImageDraw.Draw(sea_mask).rectangle((0, 0, size, horizon), fill=0)
+    image.paste(Image.new("RGBA", (size, size), SEA), mask=sea_mask)
 
     # One trace across the navy: the reading the whole package exists to make.
     left, right = inset + 105 * unit, size - inset - 105 * unit
