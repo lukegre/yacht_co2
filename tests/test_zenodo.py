@@ -638,9 +638,7 @@ def test_unreadable_draft_is_discarded_and_versioned_again(tmp_path):
     class BrokenDraftClient(FakeClient):
         def get_draft(self, record_id):
             if record_id == "broken":
-                raise ZenodoError(
-                    "Zenodo GET /api/records/broken/draft: HTTP 500: internal error"
-                )
+                raise ZenodoError("Zenodo GET /api/records/broken/draft: HTTP 500: internal error")
             return super().get_draft(record_id)
 
         def get_record(self, record_id):
@@ -675,9 +673,7 @@ def test_a_new_version_draft_records_its_parent(tmp_path):
                 raise ZenodoError("HTTP 404")
             return super().get_draft(record_id)
 
-    upload_raw_folder(
-        tmp_path, client=PublishedClient(), record_id="published", new_version=True
-    )
+    upload_raw_folder(tmp_path, client=PublishedClient(), record_id="published", new_version=True)
     state = json.loads((tmp_path / STATE_NAME).read_text())
     assert state["parent_record_id"] == "published"
 

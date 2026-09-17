@@ -72,8 +72,8 @@ class Pipeline:
 
     def process(self, ds: xr.Dataset) -> xr.Dataset:
         """Apply local QC, calibration, pCO2 and fCO2 processing."""
-        ds = apply_qc(ds, self.manifest.qc)
-        ds = calibrate_co2(ds, self.manifest.calibration)
+        ds = apply_qc(ds, self.manifest.qc, self.manifest.phases)
+        ds = calibrate_co2(ds, self.manifest.calibration, self.manifest.phases)
         ds = derive_pco2(ds, self.manifest.equilibrator)
         return derive_fco2(ds)
 
@@ -109,7 +109,11 @@ class Pipeline:
         )
         noaa_product = products.get(str(self.manifest.atmosphere.get("noaa_product", "")))
         enriched = resolve_air_co2(
-            enriched, observation_product, noaa_product, self.manifest.atmosphere
+            enriched,
+            observation_product,
+            noaa_product,
+            self.manifest.atmosphere,
+            self.manifest.phases,
         )
         if {"fco2_seawater", "fco2_air"}.issubset(enriched) and (
             "wind_speed" in enriched or "wind_speed_squared" in enriched

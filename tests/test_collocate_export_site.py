@@ -8,7 +8,7 @@ import xarray as xr
 from yacht_co2.collocate import collocate_track, resolve_air_co2
 from yacht_co2.export import datasets_identical, export_dataset
 from yacht_co2.naming import output_name, output_stem
-from yacht_co2.schema import validate_dataset
+from yacht_co2.schema import QCFlag, validate_dataset
 from yacht_co2.site import build_site, parse_size, site_filename
 
 
@@ -107,7 +107,6 @@ def test_exports_and_site(tmp_path):
         tmp_path / "single.html",
         single_file=True,
         qc_config={
-            "analysis_phases": [5],
             "minimum_water_flow": 0.1,
             "minimum_gas_flow": 0.1,
         },
@@ -133,8 +132,11 @@ def test_exports_and_site(tmp_path):
     assert "≥ 0.1" in rendered
     assert "-2.5 to 45 °C" in rendered
     assert "defaultChartVariables=['fco2_seawater','raw_watertemp']" in rendered
-    assert "rgba(70,91,99,.52)" in rendered
-    assert "dash:'dot'" in rendered
+    # The clicked observation is one red, black-edged dot, on the map and on
+    # every chart series that has a value there.
+    assert "SELECTED_COLOUR='#e6533d', SELECTED_EDGE='#000'" in rendered
+    assert "marker:{color:SELECTED_COLOUR,size:11,line:{color:SELECTED_EDGE,width:2}}" in rendered
+    assert "fillColor:SELECTED_COLOUR" in rendered
     assert "variable_meta" in rendered
     assert "Water temperature" in rendered
     assert "Salinity" in rendered
@@ -160,7 +162,7 @@ def phase_track(count=40):
             "raw_watertemp": ("time", np.linspace(12, 15, count)),
             "raw_salinity": ("time", np.linspace(34, 35, count)),
             "raw_sampling_phase": ("time", phase),
-            # The air phase is outside qc.analysis_phases, so it is flagged.
+            # The air phase is outside phases.analysis, so it is flagged.
             "qc_flag": ("time", np.where(phase == 5, 0, 8).astype("uint16")),
         },
         coords={"time": time.astype("datetime64[ns]")},
@@ -187,10 +189,88 @@ def test_the_page_carries_the_sampling_phase_and_names_it(tmp_path):
     # The picker filters the map and the charts alongside the QC toggle, not
     # instead of it, so a flagged phase is still viewable with QC off.
     rendered = path.read_text()
-    assert 'aria-label="Sampling phase to display"' in rendered
+    assert 'aria-label="Sampling phase filter"' in rendered
+    assert "id=phase-pills" in rendered
     assert "function phaseOk(i)" in rendered
     assert "function included(i)" in rendered
     assert "eligibleIndices(){return S.time.map((_,i)=>i).filter(included)}" in rendered
+
+
+def test_picking_a_phase_stops_its_own_exclusion_counting_against_it(tmp_path):
+    """QC flags the air phase for being the air phase, so asking for it must show it."""
+    path = build_site(
+        phase_track(),
+        tmp_path / "excluded.html",
+        variables=["fco2_seawater"],
+        phase_config={"analysis": [5], "air": [22]},
+    )
+    model, rendered = model_of(path), path.read_text()
+
+    assert model["phase_flag"] == int(QCFlag.EXCLUDED_PHASE)
+    # Every air record carries that bit and nothing else, so QC-good alone
+    # would empty the page the moment the air phase was picked.
+    air = [model["qc"][i] for i, code in enumerate(model["phase"]) if code == 22]
+    assert air and all(flag == int(QCFlag.EXCLUDED_PHASE) for flag in air)
+    # An empty selection is every phase, so it is the plain QC-good test; a
+    # named selection is the statement that its own exclusion is the point.
+    assert "function qcOk(i){return !phaseFilter.size?good[i]:(S.qc[i]&~phaseFlag)===0}" in rendered
+    assert "function included(i){return (!q('#good').checked||qcOk(i))&&phaseOk(i)}" in rendered
+
+
+def test_thinning_keeps_the_rare_phases_the_picker_offers(tmp_path):
+    """An even step through the track would all but erase a calibration phase."""
+    count = 40_000
+    time = np.datetime64("2023-01-01", "m") + np.arange(count)
+    # One record in two hundred is a zero calibration, the rest is seawater.
+    phase = np.where(np.arange(count) % 200 == 0, 2.0, 5.0)
+    ds = xr.Dataset(
+        {
+            "lat": ("time", np.linspace(0, 1, count)),
+            "lon": ("time", np.linspace(10, 11, count)),
+            "fco2_seawater": ("time", np.linspace(380, 420, count)),
+            "raw_sampling_phase": ("time", phase),
+            "qc_flag": ("time", np.where(phase == 5, 0, 8).astype("uint16")),
+        },
+        coords={"time": time.astype("datetime64[ns]")},
+    )
+
+    kept = model_of(build_site(ds, tmp_path / "thin.html", max_points=2000))["phase"]
+
+    assert len(kept) <= 2200
+    # Proportionally the calibration phase would be ten points; the floor
+    # keeps enough of it to draw.
+    assert kept.count(2) >= 190
+    assert kept.count(5) > kept.count(2)
+
+
+def test_the_page_says_how_far_it_was_stepped_down_and_what_it_is_for(tmp_path):
+    """A stepped-down page that looks whole invites analysis it cannot support."""
+    stepped = build_site(phase_track(4000), tmp_path / "stepped.html", max_points=200)
+    model = model_of(stepped)
+
+    assert model["sampling"]["total"] == 4000
+    assert model["sampling"]["shown"] == len(model["time"]) <= 200
+    rendered = stepped.read_text()
+    assert "Showing <strong>${n(shown)} of ${n(total)} observations</strong>" in rendered
+    assert "This page is for viewing the campaign quickly, not for analysing it." in rendered
+    assert "Any analysis should be done on the full dataset" in rendered
+
+    # A page carrying the whole track says so rather than reporting a step.
+    whole = model_of(build_site(phase_track(40), tmp_path / "whole.html"))
+    assert whole["sampling"] == {"total": 40, "shown": 40}
+
+
+def test_a_budget_too_small_for_the_phase_floors_still_holds(tmp_path):
+    """The budget is the hard limit; keeping every phase visible is a preference.
+
+    The limit has to clear the page's own chrome -- the script, the styles and
+    the report travel whatever the track is stepped down to -- so a budget
+    below that floor cannot be met by dropping observations. 200 kB is above
+    it and is the size a hard limit is actually tested at.
+    """
+    path = build_site(phase_track(4000), tmp_path / "tight.html", max_bytes="200 kB")
+
+    assert path.stat().st_size <= 200_000
 
 
 def test_site_variables_choose_what_the_page_stores(tmp_path):
@@ -223,9 +303,9 @@ def test_a_page_budget_may_be_written_as_a_size(tmp_path):
 
     ds = phase_track(4000)
     big = build_site(ds, tmp_path / "big.html", max_bytes="4 MB")
-    small = build_site(ds, tmp_path / "small.html", max_bytes="120 kB")
+    small = build_site(ds, tmp_path / "small.html", max_bytes="200 kB")
 
-    assert small.stat().st_size <= 120_000
+    assert small.stat().st_size <= 200_000
     assert len(model_of(small)["time"]) < len(model_of(big)["time"]) == 4000
 
 

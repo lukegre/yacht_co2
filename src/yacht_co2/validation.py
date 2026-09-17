@@ -45,7 +45,7 @@ SECTION_KEYS: dict[str, frozenset[str]] = {
     "campaign": frozenset({"id", "name", "date"}),
     "expedition": frozenset({"id", "name", "date"}),
     "inputs": frozenset({"logs", "repository", "timezone"}),
-    "phases": frozenset({"analysis", "air"}),
+    "phases": frozenset({"analysis", "air", "zero", "span"}),
     "calibration": frozenset(
         {
             "method",
@@ -54,8 +54,6 @@ SECTION_KEYS: dict[str, frozenset[str]] = {
             "span_measured",
             "span_certified",
             "standards",
-            "zero_phase",
-            "span_phases",
         }
     ),
     "equilibrator": frozenset(
@@ -70,11 +68,15 @@ SECTION_KEYS: dict[str, frozenset[str]] = {
         }
     ),
     "qc": frozenset(
-        {"analysis_phases", "status_ok", "minimum_water_flow", "minimum_gas_flow", "ranges"}
+        {
+            "status_ok",
+            "minimum_water_flow",
+            "minimum_gas_flow",
+            "ranges",
+            "phase_transition_lag",
+        }
     ),
-    "atmosphere": frozenset(
-        {"air_phases", "time_tolerance", "observations_product", "noaa_product"}
-    ),
+    "atmosphere": frozenset({"time_tolerance", "observations_product", "noaa_product"}),
     "flux": frozenset({"temperature", "salinity", "wind", "sea_fco2", "air_fco2", "coefficient"}),
     "outputs": frozenset(
         {
@@ -88,6 +90,16 @@ SECTION_KEYS: dict[str, frozenset[str]] = {
             "video_options",
         }
     ),
+}
+# Phase codes used to be entered once per consumer, which let three copies of
+# the same integer drift apart with nothing to notice. Each now lives only in
+# `phases`, so a manifest still writing one of these gets an error naming
+# where the value moved rather than the generic "unread key" warning.
+MOVED_KEYS = {
+    "qc.analysis_phases": "phases.analysis",
+    "atmosphere.air_phases": "phases.air",
+    "calibration.zero_phase": "phases.zero",
+    "calibration.span_phases": "phases.span",
 }
 # Keyword arguments outputs.site_options may pass through to build_site.
 SITE_OPTION_KEYS = frozenset({"max_points", "max_bytes", "variables"})
@@ -227,12 +239,10 @@ def _check_calibration(check: _Checker, manifest: Mapping[str, Any]) -> None:
         )
     for key in ("zero_measured", "span_measured", "span_certified"):
         check.number(calibration.get(key), f"calibration.{key}")
-    check.int_list(calibration.get("span_phases"), "calibration.span_phases")
 
 
 def _check_qc(check: _Checker, manifest: Mapping[str, Any]) -> None:
     qc = check.mapping(manifest.get("qc"), "qc")
-    check.int_list(qc.get("analysis_phases"), "qc.analysis_phases")
     for key in ("minimum_water_flow", "minimum_gas_flow"):
         check.number(qc.get(key), f"qc.{key}")
     ranges = check.mapping(qc.get("ranges"), "qc.ranges")
@@ -249,6 +259,26 @@ def _check_qc(check: _Checker, manifest: Mapping[str, Any]) -> None:
             check.error(where, "must be a [minimum, maximum] pair of numbers")
         elif bounds[0] >= bounds[1]:
             check.error(where, f"minimum {bounds[0]} is not below maximum {bounds[1]}")
+    _check_transition_lag(check, qc, manifest)
+
+
+def _check_transition_lag(
+    check: _Checker, qc: Mapping[str, Any], manifest: Mapping[str, Any]
+) -> None:
+    """Check the settling lag names phases the manifest actually describes."""
+    lags = check.mapping(qc.get("phase_transition_lag"), "qc.phase_transition_lag")
+    if not lags:
+        return
+    roles = set(check.mapping(manifest.get("phases"), "phases"))
+    for name, seconds in lags.items():
+        where = f"qc.phase_transition_lag.{name}"
+        if str(name) not in roles:
+            known = ", ".join(sorted(roles)) or "none"
+            check.error(where, f"is not a phase named in the phases block (it has: {known})")
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+            check.error(where, f"must be a number of seconds, not {type(seconds).__name__}")
+        elif seconds < 0:
+            check.error(where, f"must not be negative, but is {seconds}")
 
 
 def _check_outputs(check: _Checker, manifest: Mapping[str, Any]) -> None:
@@ -283,6 +313,22 @@ def _check_outputs(check: _Checker, manifest: Mapping[str, Any]) -> None:
     check.number(options.get("fps"), "outputs.video_options.fps")
 
 
+def _check_moved_keys(check: _Checker, raw: Mapping[str, Any]) -> None:
+    """Fail hard on a phase-code key that has moved into ``phases``.
+
+    These used to be entered once per consumer, so the same campaign could
+    declare its zero phase as ``2`` in one place and ``3`` in another with
+    nothing to say the two disagreed. Now that ``phases`` is the only place a
+    code is declared, a manifest still writing one of the old keys is wrong
+    rather than merely stale, and gets told exactly where the value belongs.
+    """
+    for dotted, moved_to in MOVED_KEYS.items():
+        section, key = dotted.split(".")
+        block = raw.get(section)
+        if isinstance(block, Mapping) and key in block:
+            check.error(dotted, f"has moved; declare the codes once in {moved_to}")
+
+
 def validate_manifest_document(raw: Any, path: str | Path) -> list[Finding]:
     """Check one campaign manifest, returning every problem found."""
     path = Path(path)
@@ -292,7 +338,14 @@ def validate_manifest_document(raw: Any, path: str | Path) -> list[Finding]:
     check.unknown_keys(raw, MANIFEST_SECTIONS, "manifest")
     for section, known in SECTION_KEYS.items():
         if isinstance(raw.get(section), Mapping):
-            check.unknown_keys(raw[section], known, section)
+            # A moved key gets its own hard error below; it should not also
+            # be reported as an unread typo.
+            prefix = f"{section}."
+            moved = {
+                dotted.removeprefix(prefix) for dotted in MOVED_KEYS if dotted.startswith(prefix)
+            }
+            check.unknown_keys(raw[section], known | moved, section)
+    _check_moved_keys(check, raw)
 
     campaign_value = raw.get("campaign")
     legacy_value = raw.get("expedition")
@@ -337,7 +390,6 @@ def validate_manifest_document(raw: Any, path: str | Path) -> list[Finding]:
     _check_qc(check, raw)
 
     atmosphere = check.mapping(raw.get("atmosphere"), "atmosphere")
-    check.int_list(atmosphere.get("air_phases"), "atmosphere.air_phases")
     check.string(atmosphere.get("time_tolerance"), "atmosphere.time_tolerance")
 
     products = raw.get("products", [])

@@ -124,7 +124,9 @@ def _write_upload_checkpoint(
     files = _checkpoint_files(folder, previous)
     state["version"] = 1
     state["zenodo_upload"] = {
-        "record_id": str((upload or {}).get("record_id") or (previous or {}).get("record_id") or ""),
+        "record_id": str(
+            (upload or {}).get("record_id") or (previous or {}).get("record_id") or ""
+        ),
         "config_sha256": _sha256(config),
         "files": {
             path.name: {"sha256": _sha256(path), "size": path.stat().st_size} for path in files

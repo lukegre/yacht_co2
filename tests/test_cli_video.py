@@ -90,7 +90,7 @@ def test_cli_site_processes_the_campaign_when_there_is_no_dataset(tmp_path):
 
 
 def test_cli_site_builds_what_the_manifest_asks_for(tmp_path):
-    """outputs decides the destinations, and site_options reach build_site."""
+    """site_options reach build_site, and single_html names the destination."""
     manifest = campaign_manifest(
         tmp_path, outputs="site: true, single_html: true, site_options: {max_points: 2}"
     )
@@ -99,7 +99,6 @@ def test_cli_site_builds_what_the_manifest_asks_for(tmp_path):
     result = CliRunner().invoke(app, ["site", str(manifest)])
 
     assert result.exit_code == 0, result.output
-    assert (tmp_path / "yacht_co2-fastnet-2023_06-site" / "index.html").is_file()
     single = (tmp_path / "yacht_co2-fastnet-2023_06-site.html").read_text()
     assert "<title>Fastnet (2023-06)</title>" in single
     # site_options reaches build_site: three observations subsample to two.

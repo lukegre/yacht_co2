@@ -21,7 +21,6 @@ equilibrator:
   sea_temperature: watertemp
   temperature_coefficient: 0.0423
 qc:
-  analysis_phases: [5]
   minimum_water_flow: 0.1
   minimum_gas_flow: 0.1
   ranges:
@@ -29,7 +28,6 @@ qc:
     watertemp: [-2.5, 45]
     salinity: [0, 45]
 atmosphere:
-  air_phases: [22]
   time_tolerance: 7D
 products: []
 flux:

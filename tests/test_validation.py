@@ -18,7 +18,8 @@ VALID_MANIFEST = {
     "campaign": {"name": "Fastnet 2023"},
     "inputs": {"logs": "*.log"},
     "calibration": {"method": "instrument"},
-    "qc": {"analysis_phases": [5], "ranges": {"co2": [100, 1000]}},
+    "phases": {"analysis": [5]},
+    "qc": {"ranges": {"co2": [100, 1000]}},
     "outputs": {"formats": ["netcdf", "csv"], "site": True},
 }
 
@@ -241,3 +242,59 @@ def test_cli_validate_checks_the_project_config_without_a_manifest(tmp_path, mon
     result = CliRunner().invoke(app, ["validate"])
     assert result.exit_code == 1
     assert "zenodo.keywords: must be a list of strings" in result.output
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        (
+            {"qc": {"analysis_phases": [5]}},
+            "qc.analysis_phases: has moved; declare the codes once in phases.analysis",
+        ),
+        (
+            {"atmosphere": {"air_phases": [22]}},
+            "atmosphere.air_phases: has moved; declare the codes once in phases.air",
+        ),
+        (
+            {"calibration": {"method": "instrument", "zero_phase": 2}},
+            "calibration.zero_phase: has moved; declare the codes once in phases.zero",
+        ),
+        (
+            {"calibration": {"method": "instrument", "span_phases": [1, 15]}},
+            "calibration.span_phases: has moved; declare the codes once in phases.span",
+        ),
+    ],
+)
+def test_a_moved_phase_key_is_a_hard_error(tmp_path, overrides, expected):
+    path = write_manifest(tmp_path, **overrides)
+    findings = validate_manifest_document(yaml.safe_load(path.read_text()), path)
+
+    assert messages(findings, "error") == [expected]
+
+
+def test_a_transition_lag_must_name_a_described_phase(tmp_path):
+    path = write_manifest(
+        tmp_path,
+        phases={"analysis": [5], "zero": [2]},
+        qc={"phase_transition_lag": {"analysis": 120, "zeroo": 180}},
+    )
+    findings = validate_manifest_document(yaml.safe_load(path.read_text()), path)
+
+    assert messages(findings, "error") == [
+        "qc.phase_transition_lag.zeroo: is not a phase named in the phases block "
+        "(it has: analysis, zero)"
+    ]
+
+
+def test_a_transition_lag_must_be_a_non_negative_number(tmp_path):
+    path = write_manifest(
+        tmp_path,
+        phases={"analysis": [5], "zero": [2]},
+        qc={"phase_transition_lag": {"analysis": "2min", "zero": -5}},
+    )
+    findings = validate_manifest_document(yaml.safe_load(path.read_text()), path)
+
+    assert messages(findings, "error") == [
+        "qc.phase_transition_lag.analysis: must be a number of seconds, not str",
+        "qc.phase_transition_lag.zero: must not be negative, but is -5",
+    ]

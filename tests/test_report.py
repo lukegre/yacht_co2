@@ -80,10 +80,105 @@ def test_qc_counts_are_per_bit_and_may_overlap():
     assert sum(quality["flag_counts"].values()) > quality["flagged_records"]
 
 
+def _manifest_with_phases(tmp_path):
+    path = tmp_path / "manifest.yaml"
+    path.write_text(
+        "campaign:\n  name: Fastnet 2023\ninputs:\n  logs: '*.log'\nphases:\n  analysis: [5]\n"
+    )
+    return path
+
+
 def test_variable_inventory_omits_raw_columns():
     names = [item["name"] for item in summarise(dataset())["variables"]]
 
     assert names == ["pco2_seawater"]
+
+
+def test_variable_inventory_keeps_temperature_and_salinity():
+    """They are logged raw, but they are the seawater state fCO2 is derived at."""
+    ds = dataset()
+    ds["raw_watertemp"] = ("time", np.full(6, 14.0), {"units": "degC"})
+    ds["raw_salinity"] = ("time", np.full(6, 35.0))
+
+    entries = {item["name"]: item for item in summarise(ds)["variables"]}
+
+    assert set(entries) == {"pco2_seawater", "raw_watertemp", "raw_salinity"}
+    assert entries["raw_watertemp"]["units"] == "degC"
+    assert entries["raw_salinity"]["mean"] == 35.0
+    # Other instrument diagnostics stay out of the summary.
+    assert "raw_co2" not in entries
+
+
+def test_phase_tally_counts_every_sampling_phase():
+    """Flag counts say how much QC excluded; the tally says what it was."""
+    ds = dataset()
+    ds["raw_sampling_phase"] = ("time", np.array([5.0, 5.0, 5.0, 5.0, 2.0, np.nan]))
+
+    phases = summarise(ds)["phases"]
+
+    assert [item["code"] for item in phases] == [None, 2, 5]
+    assert [item["records"] for item in phases] == [1, 1, 4]
+    # Records 1 and 2 are flagged for range, flow and position, not for phase.
+    assert [item["good_records"] for item in phases] == [1, 1, 2]
+    assert phases[-1]["percent"] == pytest.approx(66.7)
+    # Without a manifest naming the roles, a phase is numbered, not lumped.
+    assert [item["label"] for item in phases] == ["Unrecorded", "Phase 2", "Phase 5"]
+
+
+def test_phase_tally_reports_mean_co2_per_phase():
+    """A zero phase reading near zero is what says the calibration ran."""
+    ds = dataset()
+    ds["raw_sampling_phase"] = ("time", np.array([5.0, 5.0, 5.0, 5.0, 2.0, 2.0]))
+    ds["raw_co2"] = ("time", np.array([400.0, 410.0, 390.0, 400.0, 1.0, 3.0]), {"units": "ppm"})
+
+    zero, seawater = summarise(ds)["phases"]
+
+    assert zero["code"] == 2
+    assert zero["co2_variable"] == "raw_co2"
+    assert zero["co2_units"] == "ppm"
+    assert zero["co2_mean"] == 2.0
+    assert zero["co2_records"] == 2
+    assert seawater["co2_mean"] == 400.0
+    assert seawater["co2_std"] == pytest.approx(7.07, abs=0.01)
+
+
+def test_phase_co2_mean_ignores_qc_flags_and_missing_readings():
+    """QC flags a zero phase for being out of seawater range, which is the point."""
+    ds = dataset()
+    ds["raw_sampling_phase"] = ("time", np.full(6, 2.0))
+    # Every record in this phase is flagged, and one was never measured.
+    ds["qc_flag"] = ("time", np.full(6, int(QCFlag.PHYSICAL_RANGE), dtype="uint16"))
+    ds["raw_co2"] = ("time", np.array([2.0, 4.0, np.nan, 2.0, 4.0, 2.0]))
+
+    phase = summarise(ds)["phases"][0]
+
+    assert phase["good_records"] == 0
+    assert phase["co2_records"] == 5
+    assert phase["co2_mean"] == 2.8
+
+
+def test_phase_tally_reports_no_co2_when_the_track_holds_none():
+    ds = dataset().drop_vars("raw_co2")
+    ds["raw_sampling_phase"] = ("time", np.full(6, 5.0))
+
+    phase = summarise(ds)["phases"][0]
+
+    assert phase["co2_variable"] is None
+    assert phase["co2_mean"] is None
+
+
+def test_phase_tally_takes_its_names_from_the_manifest(tmp_path):
+    ds = dataset()
+    ds["raw_sampling_phase"] = ("time", np.full(6, 5.0))
+    manifest = load_manifest(_manifest_with_phases(tmp_path))
+
+    labels = [item["label"] for item in summarise(ds, manifest=manifest)["phases"]]
+
+    assert labels == ["Seawater"]
+
+
+def test_phase_tally_is_absent_when_the_logs_held_no_phase():
+    assert summarise(dataset())["phases"] == []
 
 
 def test_variable_ranges_exclude_qc_flagged_records():

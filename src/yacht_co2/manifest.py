@@ -161,9 +161,7 @@ def build_manifest(
     template = read_yaml(defaults_path)
     name = str(zenodo_document.get("campaign") or zenodo_document.get("title") or "").strip()
     if not name:
-        raise ManifestError(
-            f"{zenodo_path} needs campaign or title to supply campaign.name"
-        )
+        raise ManifestError(f"{zenodo_path} needs campaign or title to supply campaign.name")
 
     date = str(zenodo_document.get("campaign_date") or "").strip()
     campaign_id = str(zenodo_document.get("slug") or zenodo_path.parent.name).strip()
@@ -173,9 +171,7 @@ def build_manifest(
 
     repository = str(zenodo_document.get("doi") or "").strip()
     if not repository:
-        raise ManifestError(
-            f"{zenodo_path} needs doi to supply the default inputs.repository"
-        )
+        raise ManifestError(f"{zenodo_path} needs doi to supply the default inputs.repository")
 
     document = dict(template)
     document["campaign"] = {"id": campaign_id, "name": name}
@@ -183,7 +179,9 @@ def build_manifest(
         document["campaign"]["date"] = date
     document["inputs"] = {**document.get("inputs", {}), "repository": repository}
     document.pop("expedition", None)
-    destination = Path(output).resolve() if output is not None else zenodo_path.with_name(MANIFEST_NAME)
+    destination = (
+        Path(output).resolve() if output is not None else zenodo_path.with_name(MANIFEST_NAME)
+    )
     if destination.exists():
         raise ManifestError(f"manifest already exists: {destination}")
 

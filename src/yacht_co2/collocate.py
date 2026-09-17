@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from .schema import QCFlag, attach_qc_metadata
+from .schema import QCFlag, attach_qc_metadata, role_codes
 
 
 def _coord(ds: xr.Dataset, short: str, long: str) -> str | None:
@@ -94,8 +94,14 @@ def resolve_air_co2(
     observations: xr.Dataset | None = None,
     noaa: xr.Dataset | None = None,
     config: Mapping[str, Any] | None = None,
+    phases: Mapping[str, Any] | None = None,
 ) -> xr.Dataset:
-    """Resolve atmospheric xCO2 by onboard → observations → NOAA priority."""
+    """Resolve atmospheric xCO2 by onboard → observations → NOAA priority.
+
+    The onboard reading is only trustworthy while the inlet is actually
+    sampling air, which is ``phases.air`` -- the manifest's own ``phases``
+    block, so the codes agree with whatever QC and calibration used them for.
+    """
     config = dict(config or {})
     result = track.copy()
     target = pd.DatetimeIndex(result.time.values)
@@ -104,7 +110,8 @@ def resolve_air_co2(
     tolerance = str(config.get("time_tolerance", "7D"))
     if "raw_sampling_phase" in result and "xco2_dry" in result:
         phase = result.raw_sampling_phase.values.astype(float)
-        mask = np.isin(phase, config.get("air_phases", [22])) & np.isfinite(result.xco2_dry.values)
+        air_phases = role_codes(phases, "air", [22])
+        mask = np.isin(phase, air_phases) & np.isfinite(result.xco2_dry.values)
         onboard = _nearest_series(target, target[mask], result.xco2_dry.values[mask], tolerance)
         use = np.isfinite(onboard)
         values[use], source[use] = onboard[use], "onboard"

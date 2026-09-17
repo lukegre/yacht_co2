@@ -13,7 +13,7 @@ import xarray as xr
 from loguru import logger
 
 from .manifest import CampaignManifest
-from .schema import QCFlag
+from .schema import QCFlag, phase_labels
 
 REPORT_VERSION = "1.0.0"
 
@@ -90,6 +90,90 @@ def _quality(ds: xr.Dataset) -> dict[str, Any]:
     }
 
 
+#: Column holding the instrument's sampling phase. Matches the site's.
+_PHASE_VARIABLE = "raw_sampling_phase"
+
+
+#: Measured CO2 mole fraction, preferred in this order for the phase tally.
+#: The logged column is the one that reads across every phase, which is what
+#: makes the means comparable; a derived seawater fCO2 exists only where the
+#: instrument was on seawater.
+_PHASE_CO2_VARIABLES = ("raw_co2", "co2", "xco2_wet")
+
+
+def _phase_co2(ds: xr.Dataset) -> tuple[str, np.ndarray, str] | None:
+    """The CO2 column the phase tally averages, with its name and units."""
+    for name in _PHASE_CO2_VARIABLES:
+        if name in ds and ds[name].dims == ("time",):
+            array = ds[name]
+            return name, np.asarray(array.values, dtype=float), str(array.attrs.get("units", ""))
+    return None
+
+
+def _phases(ds: xr.Dataset, labels: Mapping[str, str]) -> list[dict[str, Any]]:
+    """How many records the instrument logged in each sampling phase, and at what CO2.
+
+    QC flags every phase outside the analysis set, so without this tally a
+    campaign's flag counts say how much was excluded but not what it was: air
+    standards, zero and span calibrations and seawater are all one number.
+
+    The CO2 mean is taken over every finite reading in the phase, flagged
+    included. It is there to say whether the instrument did what the phase
+    asked -- a zero reading near zero, a span near its certified value -- and
+    QC flags exactly those readings for being outside the seawater range, so
+    a QC-good mean would be empty for the phases the mean is most use for.
+    """
+    if _PHASE_VARIABLE not in ds:
+        return []
+    codes = np.asarray(ds[_PHASE_VARIABLE].values, dtype=float)
+    flags = np.asarray(ds.qc_flag.values, dtype="uint16")
+    co2 = _phase_co2(ds)
+    total = int(codes.size)
+    entries = []
+    # A missing phase is its own group, as it is on the page's phase picker.
+    for code in sorted(set(np.where(np.isfinite(codes), codes, -1.0).tolist())):
+        members = np.where(np.isfinite(codes), codes, -1.0) == code
+        count = int(members.sum())
+        entries.append(
+            {
+                "code": None if code == -1 else int(code),
+                # A code the manifest does not name is still a real phase, so
+                # it is numbered rather than lumped into an "other".
+                "label": labels.get(
+                    str(int(code)), "Unrecorded" if code == -1 else f"Phase {int(code)}"
+                ),
+                "records": count,
+                "good_records": int((flags[members] == 0).sum()),
+                "percent": None if not total else _round(100 * count / total, 1),
+                **_phase_co2_summary(co2, members),
+            }
+        )
+    return entries
+
+
+def _phase_co2_summary(
+    co2: tuple[str, np.ndarray, str] | None, members: np.ndarray
+) -> dict[str, Any]:
+    """Mean CO2 over one phase's finite readings, or nulls when it has none."""
+    if co2 is None:
+        return {
+            "co2_variable": None,
+            "co2_units": "",
+            "co2_records": 0,
+            "co2_mean": None,
+            "co2_std": None,
+        }
+    name, values, units = co2
+    finite = _finite(values[members])
+    return {
+        "co2_variable": name,
+        "co2_units": units,
+        "co2_records": int(finite.size),
+        "co2_mean": _round(finite.mean(), 2) if finite.size else None,
+        "co2_std": _round(finite.std(), 2) if finite.size else None,
+    }
+
+
 def _files(ds: xr.Dataset) -> list[dict[str, Any]]:
     if "source_file" not in ds:
         return []
@@ -102,19 +186,35 @@ def _files(ds: xr.Dataset) -> list[dict[str, Any]]:
 
 #: Position and bookkeeping variables reported elsewhere in the summary.
 _NOT_MEASUREMENTS = frozenset({"lat", "lon", "qc_flag", "qc_good", "source_line"})
+#: Logged columns reported despite the ``raw_`` prefix. Temperature and
+#: salinity are the seawater state fCO2 is derived at, so a summary without
+#: them cannot be sanity-checked against the water the campaign sailed through.
+_REPORTED_RAW = ("raw_watertemp", "raw_salinity")
+
+
+def _seawater(ds: xr.Dataset) -> np.ndarray:
+    """Which records were sampling seawater, per the QC step's ``seawater`` column."""
+    if "seawater" not in ds:
+        return np.ones(int(ds.sizes["time"]), dtype=bool)
+    return np.asarray(ds.seawater.values, dtype=bool)
 
 
 def _variables(ds: xr.Dataset) -> list[dict[str, Any]]:
-    """Derived (non ``raw_``) track variables with their coverage and units.
+    """Derived track variables, and logged temperature and salinity, summarised.
 
-    Ranges are taken over QC-good records only. Including flagged records makes
-    the statistics unusable as a sanity check, since out-of-range values are
-    exactly what QC flags.
+    Ranges are taken over QC-good seawater records only. Flagged records would
+    make the statistics unusable as a sanity check, since out-of-range values
+    are exactly what QC flags; gas standards would do the same to a different
+    end, since a seawater fCO2 derived from a zero is arithmetic on a number
+    that was never seawater. The per-phase tally is where those readings are
+    reported, and the page still plots them.
     """
-    good = np.asarray(ds.qc_flag.values, dtype="uint16") == 0
+    good = (np.asarray(ds.qc_flag.values, dtype="uint16") == 0) & _seawater(ds)
     entries = []
     for name, array in sorted(ds.data_vars.items()):
-        if name.startswith("raw_") or name in _NOT_MEASUREMENTS or array.dims != ("time",):
+        if name.startswith("raw_") and name not in _REPORTED_RAW:
+            continue
+        if name in _NOT_MEASUREMENTS or array.dims != ("time",):
             continue
         if not np.issubdtype(array.dtype, np.number):
             continue
@@ -124,6 +224,7 @@ def _variables(ds: xr.Dataset) -> list[dict[str, Any]]:
                 "name": str(name),
                 "units": str(array.attrs.get("units", "")),
                 "valid": int(_finite(array.values).size),
+                # "good" counts the QC-good seawater records the stats use.
                 "good": int(values.size),
                 "min": _round(values.min()) if values.size else None,
                 "max": _round(values.max()) if values.size else None,
@@ -181,6 +282,7 @@ def summarise(
         "temporal": _temporal(ds.time.values, pd.Timedelta(gap_threshold)),
         "spatial": _spatial(ds),
         "quality": _quality(ds),
+        "phases": _phases(ds, phase_labels(manifest.phases if manifest else None)),
         "files": _files(ds),
         "variables": _variables(ds),
         "products": [dict(status) for status in (products or [])],

@@ -20,11 +20,14 @@ inputs:
 # below already name the OceanPack headers; kept for logs that deviate.
 columns: {}
 
-# Documents what the instrument's sampling phases mean for this campaign.
-# Processing reads qc.analysis_phases and atmosphere.air_phases, not this.
+# The one place a sampling-phase code is declared: QC, calibration and the
+# atmosphere step all read their codes from here, keyed by role.
 phases:
+  zero: [ 2 ]
+  purge: [ 4 ] # phase in which the air inlet is measured
   analysis: [ 5 ] # phase in which seawater is measured
-  air: [ 22 ] # phase in which the air inlet is measured
+  test: [ 19 ]
+  air: [ 21 ]
 
 calibration:
   # instrument: trust the logger's own calibration. linear: rescale with
@@ -47,24 +50,30 @@ equilibrator:
 # Flags rather than filters: a failing check sets a QC bit and the observation
 # is kept. A record with no bit set is QC-good.
 qc:
-  analysis_phases: [ 5 ] # any other phase is flagged as excluded
   minimum_water_flow: 0.1 # flag below this seawater flow (waterflow column)
   minimum_gas_flow: 0.1 # flag below this gas flow (flowgas column)
   # Flag anything outside these physical bounds, `column: [min, max]`.
   ranges:
     co2: [ 100, 1000 ] # umol/mol
     watertemp: [ -2.5, 45 ] # degrees Celsius
-    salinity: [ 0, 45 ] # practical salinity
+    salinity: [ 33, 39 ] # practical salinity
+  # Settling time after the instrument switches phase: the cell still holds
+  # the previous phase's gas or water, so the first records of a phase are
+  # flagged. Keyed by the phase names above, in seconds; each phase settles at
+  # its own rate. A name not in `phases` is an error.
+  phase_transition_lag:
+    analysis: 1500
+    air: 30
+    zero: 60
 
 # Atmospheric xCO2, resolved onboard air measurement → observations → NOAA MBL.
 atmosphere:
-  air_phases: [ 22 ] # phases holding the onboard air measurement
   time_tolerance: 7D # how far a value may be carried to a track timestamp
   # observations_product: ...  # name of a products entry holding measured xco2_air
   # noaa_product: ...          # name of a products entry holding the NOAA MBL curve
 
-# Remote grids to fetch and collocate onto the track; each needs a provider
-# (cmems, era5, noaa_mbl or local) and is cached under outputs.cache.
+  # Remote grids to fetch and collocate onto the track; each needs a provider
+  # (cmems, era5, noaa_mbl or local) and is cached under outputs.cache.
 products: []
 
 flux:

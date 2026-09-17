@@ -69,10 +69,13 @@ equilibrator:
   pressure: cellpress
   water_temperature: watertemp # water at the equilibrator, never LI-850 CellTemp
   sea_temperature: watertemp
+phases:
+  analysis: [5]
 qc:
-  analysis_phases: [5]
   minimum_water_flow: 0.1
   minimum_gas_flow: 0.1
+  phase_transition_lag:       # settling seconds after each phase switch
+    analysis: 180
   ranges:
     co2: [100, 1000]
 products: []
@@ -131,7 +134,7 @@ stable:
 | 2 | invalid time | 64 | physical range |
 | 4 | invalid position | 128 | missing calibration |
 | 8 | excluded phase | 256 | collocation tolerance |
-| 16 | instrument status | | |
+| 16 | instrument status | 512 | transition lag |
 
 Wet xCO2 is calibrated, dried with the logger H2O mole fraction,
 pressure-corrected, adjusted from equilibrator to sea temperature (Takahashi
@@ -367,7 +370,7 @@ would:
 | `outputs.site`          | the hosted `yacht_co2-fastnet-2023_07_24-site/` bundle |
 | `outputs.single_html`   | the self-contained `yacht_co2-fastnet-2023_07_24-site.html` |
 | `outputs.site_options`  | `max_bytes` (page budget, e.g. `10 MB`), `max_points`, and `variables` (the columns the page stores) |
-| `phases`                | the names in the page's sampling-phase picker         |
+| `phases`                | the phase codes QC, calibration and the atmosphere step share, and the names in the page's sampling-phase picker |
 | `qc`                    | the documented QC criteria in the page               |
 
 A manifest written before `campaign.date` existed takes the date from the
@@ -378,6 +381,11 @@ The processed track NetCDF in `outputs.directory` is the input; when there is
 none the campaign is processed first and exported as NetCDF (whatever
 `outputs.formats` asks for), so a rebuild reuses it instead of reading the logs
 again. The run report beside it becomes the campaign info panel.
+
+The page carries a stepped-down copy of the track, never the whole of it, so a
+footer under the charts reports how many of the campaign's observations it is
+showing and what share that is, and says plainly that the page is for viewing
+the campaign quickly — any analysis belongs on the full dataset.
 
 ## Exports
 

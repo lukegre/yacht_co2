@@ -9,7 +9,7 @@ import numpy as np
 import xarray as xr
 from loguru import logger
 
-from .schema import QCFlag, attach_qc_metadata
+from .schema import QCFlag, attach_qc_metadata, role_codes
 
 
 def _values(ds: xr.Dataset, *names: str) -> xr.DataArray:
@@ -21,12 +21,19 @@ def _values(ds: xr.Dataset, *names: str) -> xr.DataArray:
     raise KeyError(f"none of these variables is available: {', '.join(names)}")
 
 
-def calibrate_co2(ds: xr.Dataset, config: Mapping[str, Any] | None = None) -> xr.Dataset:
+def calibrate_co2(
+    ds: xr.Dataset,
+    config: Mapping[str, Any] | None = None,
+    phases: Mapping[str, Any] | None = None,
+) -> xr.Dataset:
     """Calibrate measured wet xCO2 using instrument or zero/span coefficients.
 
     ``method: instrument`` accepts the logger's already calibrated ``raw_co2``.
     ``method: linear`` applies ``(raw - zero_measured) * span_certified /
     (span_measured - zero_measured)``. Scalars or time-aligned arrays work.
+    When neither is given as a number, the zero and span episodes are found
+    from ``phases.zero``/``phases.span`` -- the manifest's own ``phases``
+    block, so the codes are declared once and shared with QC.
     """
     config = dict(config or {})
     result = ds.copy()
@@ -46,13 +53,13 @@ def calibrate_co2(ds: xr.Dataset, config: Mapping[str, Any] | None = None) -> xr
                     result.time.values,
                     raw.values,
                     phase.values,
-                    [config.get("zero_phase", 2)],
+                    role_codes(phases, "zero", [2]),
                 )
                 span = _phase_interpolation(
                     result.time.values,
                     raw.values,
                     phase.values,
-                    config.get("span_phases", [1, 15]),
+                    role_codes(phases, "span", [1, 15]),
                 )
         if zero is None or span is None or certified is None:
             flags = result.qc_flag.values.copy()

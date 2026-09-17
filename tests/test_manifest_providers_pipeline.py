@@ -62,8 +62,7 @@ def test_build_manifest_uses_zenodo_name_and_processing_defaults(tmp_path):
     folder.mkdir()
     zenodo = folder / "zenodo.yaml"
     zenodo.write_text(
-        "campaign: Défi Azimut (solo)\ncampaign_date: 2022-09\n"
-        "doi: 10.5281/zenodo.12345\n"
+        "campaign: Défi Azimut (solo)\ncampaign_date: 2022-09\ndoi: 10.5281/zenodo.12345\n"
     )
 
     messages = []
@@ -96,9 +95,7 @@ def test_build_manifest_uses_zenodo_name_and_processing_defaults(tmp_path):
 
 def test_build_manifest_accepts_explicit_zenodo_title(tmp_path):
     zenodo = tmp_path / "zenodo.yaml"
-    zenodo.write_text(
-        "title: Custom campaign\nslug: custom-campaign\ndoi: 10.5281/zenodo.12345\n"
-    )
+    zenodo.write_text("title: Custom campaign\nslug: custom-campaign\ndoi: 10.5281/zenodo.12345\n")
 
     path = build_manifest(zenodo)
 
@@ -119,15 +116,11 @@ def test_build_manifest_requires_a_zenodo_repository(tmp_path):
 def test_built_manifest_fetches_default_logs_from_zenodo(tmp_path, monkeypatch):
     zenodo = tmp_path / "zenodo.yaml"
     zenodo.write_text(
-        "campaign: Remote campaign\ncampaign_date: 2023-06\n"
-        "doi: 10.5281/zenodo.12345\n"
+        "campaign: Remote campaign\ncampaign_date: 2023-06\ndoi: 10.5281/zenodo.12345\n"
     )
     manifest = build_manifest(zenodo)
     log = tmp_path / "remote.log"
-    log.write_text(
-        "@NAME,DATE,TIME,Latitude,Longitude\n"
-        "@DATA,2023-01-01,12:00:00,5000,00100\n"
-    )
+    log.write_text("@NAME,DATE,TIME,Latitude,Longitude\n@DATA,2023-01-01,12:00:00,5000,00100\n")
     call = {}
 
     def fake_fetch(repository, pattern, cache):
@@ -236,7 +229,7 @@ def test_pipeline_processes_fixture(tmp_path, monkeypatch):
     manifest = tmp_path / "manifest.yaml"
     manifest.write_text(
         "campaign: {name: Test}\ninputs: {logs: '*.log', timezone: UTC}\n"
-        "calibration: {method: instrument}\nqc: {analysis_phases: [5]}\n"
+        "calibration: {method: instrument}\nphases: {analysis: [5]}\n"
         "outputs: {directory: out, formats: [netcdf]}\n"
     )
     elsewhere = tmp_path / "elsewhere"

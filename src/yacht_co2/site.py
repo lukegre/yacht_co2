@@ -16,6 +16,7 @@ from loguru import logger
 
 from ._site_frontend import SCRIPT, STYLE
 from .naming import output_name
+from .schema import QCFlag, phase_labels
 
 # A page has to open over a phone connection and attach to an email, so the
 # track is stepped down to fit rather than shipped whole.
@@ -140,11 +141,6 @@ def select_variables(ds: xr.Dataset, requested: Sequence[str] | None) -> list[st
     return selected
 
 
-# What a manifest's phase roles mean on the page; anything else is titled as
-# written, so a campaign naming its own roles still reads.
-_PHASE_ROLE_LABELS = {"analysis": "Seawater", "air": "Air", "zero": "Zero", "span": "Span"}
-
-
 def _phase_codes(ds: xr.Dataset, indices: np.ndarray) -> list[int] | None:
     """Sampling phase per observation, or ``None`` when the logs held none."""
     if PHASE_VARIABLE not in ds:
@@ -154,19 +150,46 @@ def _phase_codes(ds: xr.Dataset, indices: np.ndarray) -> list[int] | None:
     return [-1 if not np.isfinite(item) else int(item) for item in values]
 
 
-def _phase_labels(config: dict[str, Any] | None) -> dict[str, str]:
-    """Name each phase code the manifest describes, ``{"5": "Seawater"}``."""
-    labels: dict[str, str] = {}
-    for role, codes in (config or {}).items():
-        if isinstance(codes, (int, float)) and not isinstance(codes, bool):
-            codes = [codes]
-        if isinstance(codes, str) or not isinstance(codes, Sequence):
-            continue
-        for code in codes:
-            if isinstance(code, bool) or not isinstance(code, (int, float)):
-                continue
-            labels[str(int(code))] = _PHASE_ROLE_LABELS.get(str(role), str(role).title())
-    return labels
+#: Points a phase keeps however small its share of the track, budget allowing.
+#: Calibration and air phases are a few hundred readings in a campaign of a
+#: hundred thousand, so an even step through the whole track all but erases
+#: them, and the page cannot show what it offers to filter by.
+_PHASE_FLOOR = 250
+
+
+def _step_indices(ds: xr.Dataset, max_points: int | None) -> np.ndarray:
+    """Choose which observations the page carries, keeping every phase visible.
+
+    An even step through the track is the right thinning for a route, but it
+    thins each phase in proportion, and every phase but seawater is already
+    rare. So each phase is first given up to :data:`_PHASE_FLOOR` points and
+    the rest of the budget is shared out in proportion to what is left over;
+    the step is taken within a phase, so its episodes stay contiguous. A budget
+    too small to seat the floors is spent evenly across the track instead,
+    since the budget is a hard limit and the floor is only a preference.
+    """
+    total = int(ds.sizes["time"])
+    if not max_points or total <= max_points:
+        return np.arange(total)
+    even = np.linspace(0, total - 1, max_points).astype(int)
+    if PHASE_VARIABLE not in ds:
+        return even
+    codes = np.asarray(ds[PHASE_VARIABLE].values, dtype=float)
+    # A missing phase is its own group, as it is for the page's phase picker.
+    codes = np.where(np.isfinite(codes), codes, -1.0)
+    groups = [np.flatnonzero(codes == code) for code in np.unique(codes)]
+    floors = [min(len(members), _PHASE_FLOOR) for members in groups]
+    surplus = [len(members) - floor for members, floor in zip(groups, floors, strict=True)]
+    remaining, spare = max_points - sum(floors), sum(surplus)
+    if remaining <= 0 or not spare:
+        return even
+    kept = [
+        members[
+            np.linspace(0, len(members) - 1, floor + round(remaining * over / spare)).astype(int)
+        ]
+        for members, floor, over in zip(groups, floors, surplus, strict=True)
+    ]
+    return np.unique(np.concatenate(kept))
 
 
 def _model(
@@ -175,9 +198,7 @@ def _model(
     variables: Sequence[str] | None = None,
     phase_labels: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    indices = np.arange(ds.sizes["time"])
-    if max_points and len(indices) > max_points:
-        indices = np.linspace(0, len(indices) - 1, max_points).astype(int)
+    indices = _step_indices(ds, max_points)
     candidates = select_variables(ds, variables)
     if variables is not None:
         # An explicit selection is itself an order of interest, so keep it.
@@ -211,6 +232,9 @@ def _model(
         "raw_chl_a": "µg L⁻¹",
     }
     return {
+        # What the page carries against what the campaign holds, so the note
+        # under it can say how far the track was stepped down to fit.
+        "sampling": {"total": int(ds.sizes["time"]), "shown": int(indices.size)},
         "time": [pd.Timestamp(item).isoformat() for item in ds.time.values[indices]],
         "lat": [_json_value(item) for item in ds.lat.values[indices]],
         "lon": [_json_value(item) for item in ds.lon.values[indices]],
@@ -219,6 +243,9 @@ def _model(
         # it is what the page filters by, not something it plots.
         "phase": _phase_codes(ds, indices),
         "phase_meta": phase_labels or {},
+        # Naming the bit QC sets for an off-analysis phase lets the page show a
+        # phase the QC filter would otherwise hide for being that very phase.
+        "phase_flag": int(QCFlag.EXCLUDED_PHASE),
         "variables": ordered,
         "variable_meta": {
             name: {
@@ -246,9 +273,6 @@ def _qc_help(config: dict[str, Any] | None) -> str:
             "invalid position",
         ),
     ]
-    phases = config.get("analysis_phases", [5])
-    if phases:
-        rows.append(("Sampling phase", f"One of {', '.join(map(str, phases))}", "excluded phase"))
     if config.get("status_ok") is not None:
         rows.append(
             (
@@ -285,7 +309,9 @@ def _qc_help(config: dict[str, Any] | None) -> str:
     )
     return (
         "<span class=qc-popover id=qc-help role=tooltip><strong>QC-good means every applicable check passes</strong>"
-        "<span class=qc-intro>With the filter enabled, any observation carrying one or more flags is hidden.</span>"
+        "<span class=qc-intro>With the filter enabled, any observation carrying one or more flags is hidden. "
+        "These checks describe seawater, so they are asked only of the seawater phases; a gas standard is not "
+        "judged against them and is drawn whatever the filter says. Use the sampling phase picker to isolate one.</span>"
         "<span class=qc-table-wrap><table><thead><tr><th scope=col>Check</th><th scope=col>Accepted</th><th scope=col>Flag if failed</th></tr></thead>"
         f"<tbody>{body}</tbody></table></span></span>"
     )
@@ -294,15 +320,47 @@ def _qc_help(config: dict[str, Any] | None) -> str:
 def _body(title: str, qc_config: dict[str, Any] | None = None) -> str:
     qc_help = _qc_help(qc_config)
     return (
-        f"<header class=masthead><div><p class=eyebrow>Yacht CO₂ campaign</p><h1>{title}</h1></div>"
-        f'<div class=masthead-controls><label class="compact-field phase-field" id=phase-field hidden>Sampling phase<select id=phase aria-label="Sampling phase to display"></select></label>'
-        f"<span class=toggle-wrap><label class=toggle><input id=good type=checkbox checked aria-describedby=qc-help><span>QC-good only</span></label>{qc_help}</span></div></header>"
+        f"<header class=masthead><div><p class=eyebrow>Yacht CO₂ campaign</p><h1>{title}</h1></div></header>"
         f"<main>"
-        f"<section class=panel id=infopanel><div class=panel-heading><div><p class=eyebrow>Overview</p><h2>Campaign</h2></div></div><div id=infobody></div></section>"
-        f'<section class=panel><div class=panel-heading><div><p class=eyebrow>Route explorer</p><h2>Track</h2></div><label class=compact-field>Colour by<select id=map-variable aria-label="Map colour variable"></select></label></div><div id=map></div><div class=map-legend aria-label="Track colour scale"><strong class=legend-title id=legend-title></strong><span id=legend-min></span><span class=colour-bar></span><span id=legend-max></span></div></section>'
-        f'<section class=charts-section><div class=section-heading><div><p class=eyebrow>Linked observations</p><h2>Time series</h2><p class=section-note>Click a point to move the map marker; drag to zoom and double-click to reset. Different units or scales use a labelled right axis automatically.</p></div><button class="button primary" id=add-chart type=button aria-label="Add time series">Add chart</button></div><div class=charts id=charts></div>'
-        f"<output class=readout aria-live=polite><span class=readout-time id=readout-time></span><span class=readout-values id=readout-values></span></output></section>"
+        # What is drawn, rather than what is shown about it, so the filters sit
+        # in a panel of their own above the map and the charts they govern.
+        f'<section class="panel filters-panel"><div class=filters-row>'
+        f'<div class="compact-field phase-field" id=phase-field hidden><span>Sampling phase</span>'
+        f'<div id=phase-pills class=phase-pills role=group aria-label="Sampling phase filter"></div></div>'
+        f"<div class=filter-toggles>"
+        f"<span class=toggle-wrap><label class=toggle><input id=good type=checkbox checked aria-describedby=qc-help><span>QC-good only</span></label>{qc_help}</span></div></div>"
+        f"<p id=phase-qc-note class=phase-qc-note hidden></p></section>"
+        f"<section class=panel id=infopanel><div class=panel-heading><div><p class=eyebrow>Overview</p></div></div><div id=infobody></div></section>"
+        f'<section class=panel><div class=panel-heading><div><p class=eyebrow>Route explorer</p></div></div>'
+        f'<div id=map></div><div class=map-footer>'
+        f'<select id=map-variable class=map-variable aria-label="Map colour variable"></select>'
+        f'<div class=map-legend aria-label="Track colour scale"><strong class=legend-title id=legend-title></strong>'
+        f'<span id=legend-min></span><span class=colour-bar></span><span id=legend-max></span></div></div></section>'
+        f'<section class=charts-section><div class="section-heading charts-heading">'
+        f'<div class=section-actions>'
+        f'<span class=info-wrap><button class=info-button type=button aria-label="How the time series work" aria-describedby=charts-help>i</button>'
+        f'<span class=qc-popover id=charts-help role=tooltip><strong>Linked observations</strong>'
+        f'<span class=qc-intro>Click a point to move the map marker; drag to zoom and double-click to reset. '
+        f'Different units or scales use a labelled right axis automatically. Hover the gutter beside an axis '
+        f'(the cursor becomes a resize arrow) and scroll to zoom just that axis.</span></span></span>'
+        f'<label class="button toggle" id=phase-bands-toggle><input id=phase-bands type=checkbox><span>Phase bands</span></label>'
+        f'<label class="button toggle" id=link-x-toggle><input id=link-x type=checkbox><span>Link x-axes</span></label>'
+        f'<button class=button id=reset-view type=button title="Clear the filters, zooms, colours and extra charts and go back to the opening view">Reset view</button>'
+        f'<button class="button primary" id=add-chart type=button aria-label="Add time series">Add chart</button>'
+        f'</div></div><div class=charts id=charts></div>'
+        f"</section>"
         f"</main>"
+        # The page carries a stepped-down copy of the track, so it says so
+        # where a reader would otherwise take what is drawn for the whole of it.
+        f"<footer class=page-note><p id=density-note></p>"
+        f"<p><strong>This page is for viewing the campaign quickly, not for analysing it.</strong> "
+        f"Any analysis should be done on the full dataset, which carries every observation and "
+        f"every variable.</p></footer>"
+        # The selected observation follows the reader down the page, so the
+        # numbers behind a click stay in view while the map and the charts scroll.
+        f"<footer class=readout-bar><output class=readout aria-live=polite>"
+        f"<span class=readout-time id=readout-time></span>"
+        f"<span class=readout-values id=readout-values></span></output></footer>"
     )
 
 
@@ -393,7 +451,7 @@ def build_site(
         max(limit - overhead, _MINIMUM_BUDGET),
         limit,
         variables,
-        _phase_labels(phase_config),
+        phase_labels(phase_config),
     )
     data_script = f"window.YACHT_DATA={model};window.YACHT_REPORT={report_json};"
     if single_file:
