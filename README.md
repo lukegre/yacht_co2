@@ -9,27 +9,35 @@ represented by flags rather than destructive filtering.
 
 ```console
 uv sync
-uv run yacht-co2 validate examples/fastnet.yaml
-uv run yacht-co2 run examples/fastnet.yaml --no-enrich
+uv run yacht-co2 build-manifest data/2307_fastnet/zenodo.yaml
+uv run yacht-co2 validate data/2307_fastnet/manifest.yaml
+uv run yacht-co2 run data/2307_fastnet/manifest.yaml
 ```
 
-To run a new raw-data folder end to end, invoke the pipeline from that folder:
+`run` takes a campaign manifest and treats its folder as the campaign. It
 
-```console
-uv run yacht-co2 pipeline --campaign "Fastnet Race" --campaign-date 2023-07-24
-```
+1. uploads the folder's raw logs using the normal Zenodo defaults;
+2. reads them back from the archived record, so what is published is provably
+   what was processed;
+3. ingests, processes and exports the track;
+4. writes the JSON run report;
+5. builds the single-file interactive site, titled `Fastnet Race (2023-07-24)`.
 
-This uploads the folder using the normal Zenodo defaults, creates
-`manifest.yaml` from `zenodo.yaml`, processes the local logs to `track.csv`,
-writes `report.json` and `REPORT.md`, and creates a single-file
-`fastnet-race-2023-07-24.html` — `<campaign>-<campaign date>.html`, slugified —
-named in the page as `Fastnet Race (2023-07-24)`. An already-published Zenodo
-record is left untouched: the upload is skipped and the local products are
-still built against its DOI.
+Every artifact is named `yacht_co2-<campaign>-<campaign date>-<kind>.<ext>`:
+a hyphen separates the fields, and within a field every other character becomes
+an underscore — so this campaign writes
+`yacht_co2-fastnet_race-2023_07_24-track.nc`, `-report.json` and `-site.html`,
+and nothing collides when several campaigns share a folder or a record.
 
-Writes NetCDF, Zarr v2, CSV, hosted-site, single-HTML and run-report artifacts
-under `outputs/fastnet/`. Set `outputs.video: true` to render video (needs
-FFmpeg on `PATH`).
+Nothing is redone: an already-published Zenodo record is left untouched (the
+upload is skipped and the products are still built against its DOI), the
+manifest is never rewritten, and a rerun resumes where the last one stopped.
+`process`, `enrich` and `site` redo one step of that procedure on its own.
+
+The manifest's `outputs.formats` decides what the dataset is written as —
+compressed NetCDF by default, plus Zarr v2 and CSV on request — and
+`outputs.video: true` renders video (needs FFmpeg on `PATH`) when the pipeline
+is driven from Python.
 
 ## Manifest
 
@@ -38,8 +46,8 @@ Scientific processing needs a `manifest.yaml`; the raw readers
 manifest.
 
 Build one beside an existing `zenodo.yaml`; `campaign.name` comes from its
-campaign (or explicit title), while `campaign.id` comes from its slug or the
-data-folder name. The remaining values come from `examples/defaults.yaml`:
+campaign (or explicit title), `campaign.date` from its campaign date, and
+`campaign.id` from its slug or the data-folder name. The remaining values come from `examples/defaults.yaml`:
 
 ```console
 uv run yacht-co2 build-manifest data/2306_fastnet/zenodo.yaml
@@ -49,6 +57,7 @@ uv run yacht-co2 build-manifest data/2306_fastnet/zenodo.yaml
 campaign:
   id: fastnet-2023
   name: Fastnet 2023
+  date: 2023-07-24 # names the site "Fastnet 2023 (2023-07-24)"
 inputs:
   repository: 10.5281/zenodo.12345 # omit to read from the local filesystem
   logs: ./*.log
@@ -151,20 +160,11 @@ Stages are also callable individually: `read_log_file`, `read_campaign`,
 
 ## Run report
 
-Every run writes `report.json` and `REPORT.md`: campaign and platform
-identity, temporal/spatial extent, sampling statistics (median interval, gaps
-≥5 min, coverage), per-QC-bit and per-file record counts, a variable inventory
-over QC-good records, product fetch statuses, and the manifest/code hashes.
-
-To report on an existing dataset without re-running:
-
-```console
-uv run yacht-co2 report outputs/fastnet/track.nc \
-  --output outputs/fastnet --manifest examples/fastnet.yaml
-```
-
-The manifest is optional; without it the platform section falls back to the
-dataset's `campaign` attribute.
+Every run writes `yacht_co2-<campaign>-<date>-report.json`: campaign and platform identity,
+temporal/spatial extent, sampling statistics (median interval, gaps ≥5 min,
+coverage), per-QC-bit and per-file record counts, a variable inventory over
+QC-good records, product fetch statuses, and the manifest/code hashes. The site
+reads it for the campaign info panel.
 
 ## Project defaults
 
@@ -349,11 +349,47 @@ The same workflow is available from Python via `load_zenodo_config`,
 `generate_zenodo_config`, `parse_creators`, `ZenodoClient` and
 `upload_raw_folder`.
 
+## Site
+
+The site is built from the manifest, so one campaign is described one way:
+
+```console
+uv run yacht-co2 site data/2306_fastnet/manifest.yaml
+```
+
+Every argument comes from the manifest, so the command builds what a full run
+would:
+
+| Manifest                | Gives the site                                      |
+| ----------------------- | --------------------------------------------------- |
+| `campaign.name`, `.date`| the page title `Fastnet 2023 (2023-07-24)`, and the slugified file name |
+| `outputs.directory`     | where it is written, and where the track NetCDF is read from |
+| `outputs.site`          | the hosted `yacht_co2-fastnet-2023_07_24-site/` bundle |
+| `outputs.single_html`   | the self-contained `yacht_co2-fastnet-2023_07_24-site.html` |
+| `outputs.site_options`  | `max_bytes` (page budget, e.g. `10 MB`), `max_points`, and `variables` (the columns the page stores) |
+| `phases`                | the names in the page's sampling-phase picker         |
+| `qc`                    | the documented QC criteria in the page               |
+
+A manifest written before `campaign.date` existed takes the date from the
+`zenodo.yaml` beside it. `--output` builds one site somewhere else, and
+`--single-file/--no-single-file` overrides `outputs.single_html` for one build.
+
+The processed track NetCDF in `outputs.directory` is the input; when there is
+none the campaign is processed first and exported as NetCDF (whatever
+`outputs.formats` asks for), so a rebuild reuses it instead of reading the logs
+again. The run report beside it becomes the campaign info panel.
+
 ## Exports
 
+NetCDF is the default format and the one every other artifact is built from.
 NetCDF/Zarr preserve the complete dataset; fetched grids are exported as
 separate NetCDF files. CSV is intentionally a flattened track view and cannot
 contain gridded products.
+
+Every NetCDF file this package writes — the exported track and the cached
+product grids alike — is deflate-compressed (`zlib`, level 4) for each numeric
+variable and coordinate. Strings and scalars are stored uncompressed, as HDF5
+cannot chunk them.
 
 ## Legacy migration
 

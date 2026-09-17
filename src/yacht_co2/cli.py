@@ -2,18 +2,26 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import typer
 import xarray as xr
 from loguru import logger
 
 from .errors import RecordPublishedError, ZenodoError
-from .export import export_dataset
-from .manifest import MANIFEST_NAME, build_manifest, check_manifest, load_manifest
+from .export import netcdf_encoding
+from .manifest import (
+    MANIFEST_NAME,
+    CampaignManifest,
+    build_manifest,
+    check_manifest,
+    load_manifest,
+)
+from .naming import output_name, output_stem
 from .pipeline import Pipeline
 from .project import (
     PROJECT_CONFIG_ENV,
@@ -25,11 +33,155 @@ from .project import (
 from .report import summarise, write_report
 from .site import build_site, site_filename
 from .validation import Finding, errors, validate_project_document
-from .video import render_video
 from .zenodo import CONFIG_NAME as ZENODO_CONFIG_NAME
 from .zenodo import upload_raw_folder
 
-app = typer.Typer(help="Process and explore underway yacht CO2 observations.", no_args_is_help=True)
+APP_HELP = """Process and explore underway yacht CO2 observations.
+
+A campaign is one command, [bold]yacht-co2 run manifest.yaml[/bold], which:
+
+\b
+  1. archives the campaign folder's raw logs on Zenodo (skipped when the
+     checksums show this folder was already uploaded);
+  2. reads the logs back from the archived record, so what is published is
+     provably what was processed;
+  3. ingests and processes them into a quality-controlled track;
+  4. exports the dataset beside the manifest;
+  5. writes the JSON run report;
+  6. builds the single-file interactive site.
+
+[bold]build-manifest[/bold] writes the manifest that run takes; [bold]enrich[/bold]
+and [bold]site[/bold] redo one step of the procedure on its own.
+"""
+
+app = typer.Typer(help=APP_HELP, no_args_is_help=True, rich_markup_mode="rich")
+PIPELINE_STATE_NAME = ".yacht-co2-pipeline.json"
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _manifest_raw_files(folder: Path) -> set[Path]:
+    """Return top-level raw inputs named by an existing campaign manifest."""
+    manifest_path = folder / MANIFEST_NAME
+    if not manifest_path.is_file():
+        return set()
+    manifest = read_yaml(manifest_path)
+    pattern = str(manifest.get("inputs", {}).get("logs") or "./*.log")
+    return {
+        path
+        for path in folder.glob(pattern.removeprefix("./"))
+        if path.is_file() and path.parent == folder and not path.is_symlink()
+    }
+
+
+def _checkpoint_files(folder: Path, previous: dict[str, Any] | None = None) -> list[Path]:
+    """Select raw files without mistaking products from a prior run for inputs."""
+    paths = _manifest_raw_files(folder)
+    if previous:
+        for name in previous.get("files", {}):
+            path = folder / name
+            if path.is_file() and path.parent == folder and not path.is_symlink():
+                paths.add(path)
+    if paths:
+        return sorted(paths, key=lambda path: path.name)
+    return sorted(
+        (
+            path
+            for path in folder.iterdir()
+            if path.is_file()
+            and not path.is_symlink()
+            and not path.name.startswith(".")
+            and path.name != ZENODO_CONFIG_NAME
+        ),
+        key=lambda path: path.name,
+    )
+
+
+def _read_pipeline_state(folder: Path) -> dict[str, Any]:
+    path = folder / PIPELINE_STATE_NAME
+    if not path.is_file():
+        return {}
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("Ignoring invalid pipeline checkpoint {}", path)
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _write_upload_checkpoint(
+    folder: Path, config: Path, upload: dict[str, Any] | None = None
+) -> None:
+    state = _read_pipeline_state(folder)
+    previous = state.get("zenodo_upload")
+    previous = previous if isinstance(previous, dict) else None
+    files = _checkpoint_files(folder, previous)
+    state["version"] = 1
+    state["zenodo_upload"] = {
+        "record_id": str((upload or {}).get("record_id") or (previous or {}).get("record_id") or ""),
+        "config_sha256": _sha256(config),
+        "files": {
+            path.name: {"sha256": _sha256(path), "size": path.stat().st_size} for path in files
+        },
+    }
+    destination = folder / PIPELINE_STATE_NAME
+    temporary = folder / f"{PIPELINE_STATE_NAME}.tmp"
+    temporary.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(destination)
+
+
+def _legacy_upload_was_submitted(folder: Path, config: Path) -> bool:
+    """Recognise upload state written before pipeline checksums were introduced."""
+    upload_path = folder / ".zenodo-upload.json"
+    if not upload_path.is_file():
+        return False
+    try:
+        upload = json.loads(upload_path.read_text(encoding="utf-8"))
+        configured = read_yaml(config)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return False
+    return bool(
+        isinstance(upload, dict)
+        and upload.get("record_id")
+        and upload.get("review_url")
+        and configured.get("doi")
+        and configured.get("submitted")
+    )
+
+
+def _upload_checkpoint_matches(folder: Path, config: Path) -> bool:
+    state = _read_pipeline_state(folder)
+    checkpoint = state.get("zenodo_upload")
+    if not isinstance(checkpoint, dict):
+        if not _legacy_upload_was_submitted(folder, config):
+            return False
+        _write_upload_checkpoint(folder, config)
+        logger.info("Recorded checksum checkpoint for the previously submitted Zenodo upload")
+        return True
+
+    files = checkpoint.get("files")
+    if not isinstance(files, dict) or checkpoint.get("config_sha256") != _sha256(config):
+        return False
+    for name, expected in files.items():
+        path = folder / name
+        if (
+            not isinstance(expected, dict)
+            or not path.is_file()
+            or path.is_symlink()
+            or path.parent != folder
+            or expected.get("size") != path.stat().st_size
+            or expected.get("sha256") != _sha256(path)
+        ):
+            return False
+    if {path.name for path in _manifest_raw_files(folder)} - set(files):
+        return False
+    return True
 
 
 def _echo_findings(source: str, findings: list[Finding]) -> None:
@@ -55,116 +207,150 @@ def build_manifest_command(
     typer.echo(build_manifest(zenodo, output, defaults=defaults))
 
 
-def _campaign_identity(
-    config: Path, campaign: str | None, campaign_date: str | None
-) -> tuple[str, str]:
-    """Resolve the campaign name and date that name the upload and the site.
+def _campaign_config(manifest: CampaignManifest) -> Path:
+    """Return the Zenodo configuration beside the manifest, which names the archive."""
+    config = manifest.path.parent / ZENODO_CONFIG_NAME
+    if not config.is_file():
+        raise typer.BadParameter(f"{manifest.path.parent} holds no {ZENODO_CONFIG_NAME}")
+    return config
 
-    A command-line value wins over the folder's configuration, which is where
-    the campaign belongs: it is a fact about one race rather than the project.
-    The upload has already validated the file, so it is only read here.
+
+def _warn_when_manifest_is_stale(manifest: CampaignManifest, config: Path) -> None:
+    """Report a manifest pointing at a different record than the configuration does.
+
+    The manifest is meant to be tuned by hand, so it is never rebuilt behind
+    the operator's back: a mismatch is named and the run goes on.
     """
-    document = read_yaml(config) if config.is_file() else {}
-    name = str(campaign or document.get("campaign") or "").strip()
-    when = str(campaign_date or document.get("campaign_date") or "").strip()
-    missing = [key for key, value in (("--campaign", name), ("--campaign-date", when)) if not value]
-    if missing:
-        raise typer.BadParameter(
-            f"{config} does not name the campaign; pass {' and '.join(missing)}"
-        )
-    return name, when
-
-
-def _campaign_manifest(folder: Path, config: Path) -> Path:
-    """Return the campaign manifest, building it only if there is not one yet.
-
-    A rerun resumes rather than starts again, so an existing manifest is kept:
-    it is meant to be tuned by hand, and rebuilding it would discard that. It
-    can still be stale, so a manifest pointing at a different record than the
-    configuration does is reported without stopping the run.
-    """
-    manifest_path = folder / MANIFEST_NAME
-    if not manifest_path.is_file():
-        return build_manifest(config)
-
-    logger.info("Reusing the campaign manifest {}", manifest_path)
     archived = str(read_yaml(config).get("doi") or "").strip()
-    processing = str(read_yaml(manifest_path).get("inputs", {}).get("repository") or "").strip()
+    processing = str(manifest.inputs.get("repository") or "").strip()
     if archived and processing and archived != processing:
         logger.warning(
-            "{} reads {} but {} now names {}; delete the manifest to rebuild it",
-            manifest_path.name,
+            "{} reads {} but {} now names {}; rebuild the manifest to process the new record",
+            manifest.path.name,
             processing,
             config.name,
             archived,
         )
-    return manifest_path
 
 
-@app.command("pipeline")
-def process_all(
-    config: Optional[Path] = typer.Option(  # noqa: UP045 - typer needs an explicit Optional
-        None,
+def _processed_dataset(
+    manifest: CampaignManifest,
+) -> tuple[xr.Dataset, dict[str, Any] | None, Path]:
+    """Return the campaign's processed dataset, its report, and their directory.
+
+    Processing a campaign is slow and its result is an artifact in its own
+    right, so an existing track NetCDF is reused rather than rebuilt. When
+    there is none the campaign is processed and exported as NetCDF -- adding
+    that format if the manifest omits it -- so that the next build can reuse it.
+    """
+    directory = manifest.resolve_path(manifest.outputs.get("directory", "output"))
+    dataset_path = directory / output_name(manifest.name, manifest.date, "track", "nc")
+    if dataset_path.is_file():
+        logger.info("Reusing the processed dataset {}", dataset_path)
+        report_path = directory / output_name(manifest.name, manifest.date, "report", "json")
+        report = json.loads(report_path.read_text()) if report_path.is_file() else None
+        return xr.open_dataset(dataset_path).load(), report, directory
+
+    logger.info("No processed dataset at {}; processing the campaign first", dataset_path)
+    formats = [str(fmt) for fmt in manifest.outputs.get("formats", ["netcdf"])]
+    if not any(fmt.lower() in {"netcdf", "nc", ".nc"} for fmt in formats):
+        formats.append("netcdf")
+    outputs = {**manifest.outputs, "formats": formats}
+    result = Pipeline(replace(manifest, outputs=outputs)).run(site=False, video=False)
+    return result.dataset, result.summary or None, directory
+
+
+def _site_destination(
+    manifest: CampaignManifest,
+    directory: Path,
+    output: Path | None,
+    single_file: bool | None,
+) -> tuple[Path, bool]:
+    """Return where to build the site and whether it is one file.
+
+    One self-contained file named after the campaign, written straight into
+    the output directory, is the default; ``outputs.single_html: false`` asks
+    for the hosted bundle instead, which is the only form that needs a folder.
+    """
+    if output is not None:
+        # A named destination says what it is: --output page.html is one file.
+        return output, single_file if single_file is not None else output.suffix == ".html"
+    if single_file is None:
+        single_file = bool(manifest.outputs.get("single_html", True))
+    if single_file:
+        return directory / site_filename(manifest.name, manifest.date), True
+    return directory / output_stem(manifest.name, manifest.date, "site"), False
+
+
+@app.command("run")
+def run(
+    manifest: Path = typer.Argument(
+        ...,
         exists=True,
         dir_okay=False,
         readable=True,
-        help=f"Campaign {ZENODO_CONFIG_NAME}; its folder is the one processed. "
-        "Defaults to the current directory's.",
-    ),
-    campaign: Optional[str] = typer.Option(  # noqa: UP045 - typer needs an explicit Optional
-        None, help="Campaign name; overrides the configuration."
-    ),
-    campaign_date: Optional[str] = typer.Option(  # noqa: UP045 - typer needs an explicit Optional
-        None,
-        "--campaign-date",
-        metavar="YYYY[-MM[-DD]]",
-        help="Campaign date; overrides the configuration.",
+        help=f"Campaign {MANIFEST_NAME}; its folder is the one processed.",
     ),
 ) -> None:
-    """Upload and process a campaign folder.
+    """Archive a campaign on Zenodo and build every product from the record.
 
-    The folder is the one holding ``--config``, or the current directory. Its
-    ``zenodo.yaml`` names the campaign, so the two campaign options are needed
-    only to override that file or to write one for a folder that has none.
+    \b
+    The manifest's folder is the campaign, and the run:
+      1. uploads its raw logs to Zenodo, unless the checksums recorded by an
+         earlier run show that this folder is already archived;
+      2. reads the logs back from the archived record, so what is published is
+         provably what was processed (the local logs stand in while a
+         just-submitted record is still awaiting review);
+      3. ingests and processes them into a quality-controlled track;
+      4. exports the dataset beside the manifest;
+      5. writes the JSON run report;
+      6. builds the single-file interactive site.
+
+    Nothing is redone: an existing upload or product is kept, so a rerun
+    resumes where the last one stopped. Write the manifest first with
+    [bold]yacht-co2 build-manifest zenodo.yaml[/bold].
     """
-    config_path = (
-        config.resolve() if config is not None else Path.cwd().resolve() / ZENODO_CONFIG_NAME
-    )
-    folder = config_path.parent
+    manifest_path = manifest.resolve()
+    campaign_manifest = load_manifest(manifest_path)
+    folder = manifest_path.parent
+    config_path = _campaign_config(campaign_manifest)
+    _warn_when_manifest_is_stale(campaign_manifest, config_path)
 
-    try:
-        upload_raw_folder(
-            folder,
-            campaign=campaign,
-            campaign_date=campaign_date,
-            config=config,
-            publish=True,
-        )
-    except RecordPublishedError as exc:
-        # The archive already holds this folder, so there is nothing to upload
-        # and every product below is still built from the published record.
-        logger.info("{}; processing the published record", exc)
-    except ZenodoError as exc:
-        raise typer.BadParameter(str(exc)) from exc
+    campaign = campaign_manifest.name
+    campaign_date = campaign_manifest.date
+    if not campaign_date:
+        raise typer.BadParameter(f"{manifest_path} does not give the campaign date")
 
-    # The upload writes a configuration for a folder that had none, so the
-    # campaign can now be read back from the file rather than the options.
-    campaign, campaign_date = _campaign_identity(config_path, campaign, campaign_date)
-
-    manifest_path = _campaign_manifest(folder, config_path)
-    manifest = load_manifest(manifest_path)
+    if _upload_checkpoint_matches(folder, config_path):
+        logger.info("Zenodo upload checksums match; continuing with the processing pipeline")
+    else:
+        upload: dict[str, Any] | None = None
+        try:
+            upload = upload_raw_folder(
+                folder,
+                campaign=campaign,
+                campaign_date=campaign_date,
+                config=config_path,
+                publish=True,
+            )
+        except RecordPublishedError as exc:
+            # The archive already holds this folder, so there is nothing to upload
+            # and every product below is still built from the published record.
+            logger.info("{}; processing the published record", exc)
+        except ZenodoError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        _write_upload_checkpoint(folder, config_path, upload)
 
     # Products are built from the archived record rather than the folder they
     # were uploaded from, so what is published is provably what was processed.
     outputs = {
-        **manifest.outputs,
+        **campaign_manifest.outputs,
         "directory": str(folder),
-        "formats": ["csv"],
         "site": False,
         "single_html": False,
         "video": False,
     }
-    run_manifest = replace(manifest, outputs=outputs)
+    run_manifest = replace(campaign_manifest, outputs=outputs)
     try:
         result = Pipeline(run_manifest).run(enrich=False, site=False, video=False, report=False)
     except ZenodoError as exc:
@@ -172,7 +358,7 @@ def process_all(
         # its files cannot be read back yet. The local logs are the ones that
         # were uploaded, so they stand in until the record is available.
         logger.warning("Could not read the archived record ({}); using the local logs", exc)
-        local_inputs = dict(manifest.inputs)
+        local_inputs = dict(campaign_manifest.inputs)
         local_inputs.pop("repository", None)
         result = Pipeline(replace(run_manifest, inputs=local_inputs)).run(
             enrich=False,
@@ -185,19 +371,23 @@ def process_all(
     result.artifacts["site"] = site_path
     result.summary = summarise(
         result.dataset,
-        manifest=manifest,
+        manifest=campaign_manifest,
         platform=load_platform(folder),
         artifacts=result.artifacts,
         products=result.product_status,
     )
-    result.artifacts.update(write_report(result.summary, folder))
+    result.artifacts.update(
+        write_report(result.summary, folder, stem=output_stem(campaign, campaign_date, "report"))
+    )
     build_site(
         result.dataset,
         site_path,
-        title=f"{campaign} ({campaign_date})",
+        title=campaign_manifest.title,
         single_file=True,
         report=result.summary,
-        qc_config=manifest.qc,
+        qc_config=campaign_manifest.qc,
+        phase_config=campaign_manifest.phases,
+        **campaign_manifest.outputs.get("site_options", {}),
     )
 
     for kind, path in result.artifacts.items():
@@ -240,105 +430,50 @@ def validate(
 
 
 @app.command()
-def ingest(manifest: Path, output: Path = Path("ingested.nc")) -> None:
-    """Ingest raw logs only."""
-    Pipeline(manifest).ingest().to_netcdf(output, engine="h5netcdf")
-    typer.echo(output)
-
-
-@app.command()
-def process(manifest: Path, output: Path = Path("processed.nc")) -> None:
-    """Ingest and perform local scientific processing."""
-    pipeline = Pipeline(manifest)
-    destination = output.expanduser().resolve()
-    pipeline.process(pipeline.ingest()).to_netcdf(destination, engine="h5netcdf")
-    logger.success("Saved processed dataset to {}", destination)
-    typer.echo(destination)
-
-
-@app.command()
 def enrich(manifest: Path, input: Path, output: Path = Path("enriched.nc")) -> None:
     """Fetch and collocate products onto an existing track."""
     ds, _, _ = Pipeline(manifest).enrich(xr.open_dataset(input).load())
-    ds.to_netcdf(output, engine="h5netcdf")
+    ds.to_netcdf(output, engine="h5netcdf", encoding=netcdf_encoding(ds))
     typer.echo(output)
-
-
-@app.command("export")
-def export_command(input: Path, output: Path, formats: str = "netcdf,csv") -> None:
-    """Export a canonical dataset."""
-    paths = export_dataset(xr.open_dataset(input).load(), output, formats.split(","))
-    typer.echo("\n".join(str(path) for path in paths.values()))
 
 
 @app.command()
 def site(
-    input: Path,
-    output: Path = Path("site"),
-    single_file: bool = False,
-    report: Optional[Path] = typer.Option(  # noqa: UP045 - typer needs an explicit Optional
-        None, help="report.json to embed as a campaign info panel."
+    manifest: Path = typer.Argument(
+        ..., exists=True, dir_okay=False, readable=True, help=f"Campaign {MANIFEST_NAME}."
+    ),
+    output: Optional[Path] = typer.Option(  # noqa: UP045 - typer needs an explicit Optional
+        None, help="Build one site here instead of the destinations outputs names."
+    ),
+    single_file: Optional[bool] = typer.Option(  # noqa: UP045 - typer needs an explicit Optional
+        None,
+        "--single-file/--no-single-file",
+        help="Override outputs.single_html for this build.",
     ),
 ) -> None:
-    """Build a static interactive application.
+    """Build a static interactive application for a campaign.
 
-    If --report is not given, looks for a report.json next to the input
-    dataset or next to the output path and embeds it automatically.
+    Every argument comes from the manifest: ``campaign`` titles and names the
+    page, ``qc`` documents the flags, and ``outputs`` says where it goes, which
+    of the hosted bundle and the single file to build, and what to pass through
+    to the builder. The processed track NetCDF is reused when the output
+    directory holds one; otherwise the campaign is processed first.
     """
-    report_path = report
-    if report_path is None:
-        output_dir = output if output.suffix == "" else output.parent
-        for candidate in (input.parent / "report.json", output_dir / "report.json"):
-            if candidate.exists():
-                report_path = candidate
-                break
-    report_data = json.loads(report_path.read_text()) if report_path else None
+    campaign = load_manifest(manifest)
+    dataset, report, directory = _processed_dataset(campaign)
+    destination, one_file = _site_destination(campaign, directory, output, single_file)
     typer.echo(
         build_site(
-            xr.open_dataset(input).load(),
-            output,
-            single_file=single_file,
-            report=report_data,
+            dataset,
+            destination,
+            title=campaign.title,
+            single_file=one_file,
+            report=report,
+            qc_config=campaign.qc,
+            phase_config=campaign.phases,
+            **campaign.outputs.get("site_options", {}),
         )
     )
-
-
-@app.command()
-def video(input: Path, output: Path = Path("track.mp4"), variable: str = "pco2_seawater") -> None:
-    """Render a synchronized H.264 video."""
-    typer.echo(render_video(xr.open_dataset(input).load(), output, variable=variable))
-
-
-@app.command("report")
-def report_command(
-    input: Path,
-    output: Path = Path("."),
-    manifest: Optional[Path] = typer.Option(  # noqa: UP045 - typer needs an explicit Optional
-        None, help="Manifest supplying platform identity."
-    ),
-) -> None:
-    """Write report.json and REPORT.md for an existing dataset."""
-    loaded = load_manifest(manifest) if manifest else None
-    summary = summarise(
-        xr.open_dataset(input).load(),
-        manifest=loaded,
-        platform=load_platform(loaded.path.parent if loaded else input),
-    )
-    labels = {"report_json": "JSON report", "report_markdown": "Markdown report"}
-    for kind, path in write_report(summary, output).items():
-        typer.echo(f"{labels[kind]}: {path}")
-
-
-@app.command()
-def run(
-    manifest: Path,
-    no_enrich: bool = typer.Option(False, help="Skip all remote products."),
-    no_export: bool = typer.Option(False, help="Skip dataset exports."),
-) -> None:
-    """Run the complete manifest-driven pipeline."""
-    result = Pipeline(manifest).run(enrich=not no_enrich, export=not no_export)
-    for kind, path in result.artifacts.items():
-        typer.echo(f"{kind}: {path}")
 
 
 if __name__ == "__main__":

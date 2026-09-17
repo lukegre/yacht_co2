@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import ZenodoError
+from .site import parse_size
 from .zenodo import parse_creators
 
 CALIBRATION_METHODS = frozenset({"instrument", "linear"})
@@ -41,8 +42,8 @@ MANIFEST_SECTIONS = frozenset(
 # reported as unread rather than as an error: it changes nothing today, but it
 # is almost always a misspelling of one that would.
 SECTION_KEYS: dict[str, frozenset[str]] = {
-    "campaign": frozenset({"id", "name"}),
-    "expedition": frozenset({"id", "name"}),
+    "campaign": frozenset({"id", "name", "date"}),
+    "expedition": frozenset({"id", "name", "date"}),
     "inputs": frozenset({"logs", "repository", "timezone"}),
     "phases": frozenset({"analysis", "air"}),
     "calibration": frozenset(
@@ -76,9 +77,20 @@ SECTION_KEYS: dict[str, frozenset[str]] = {
     ),
     "flux": frozenset({"temperature", "salinity", "wind", "sea_fco2", "air_fco2", "coefficient"}),
     "outputs": frozenset(
-        {"directory", "cache", "formats", "site", "single_html", "video", "video_options"}
+        {
+            "directory",
+            "cache",
+            "formats",
+            "site",
+            "site_options",
+            "single_html",
+            "video",
+            "video_options",
+        }
     ),
 }
+# Keyword arguments outputs.site_options may pass through to build_site.
+SITE_OPTION_KEYS = frozenset({"max_points", "max_bytes", "variables"})
 PROJECT_BLOCKS = frozenset({"platform", "zenodo"})
 # Keys the Zenodo resolver understands; anything else is a likely typo that
 # would be carried into a record silently.
@@ -158,6 +170,16 @@ class _Checker:
     def boolean(self, value: Any, where: str) -> None:
         if value is not None and not isinstance(value, bool):
             self.error(where, f"must be true or false, not {type(value).__name__}")
+
+    def string_list(self, value: Any, where: str) -> None:
+        if value is None:
+            return
+        if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+            self.error(where, "must be a list of column names")
+            return
+        for position, item in enumerate(value):
+            if not isinstance(item, str):
+                self.error(f"{where}[{position}]", f"must be a column name, not {item!r}")
 
     def int_list(self, value: Any, where: str) -> None:
         if value is None:
@@ -246,6 +268,16 @@ def _check_outputs(check: _Checker, manifest: Mapping[str, Any]) -> None:
                         "outputs.formats",
                         f"{item!r} is not one of {', '.join(sorted(EXPORT_FORMATS))}",
                     )
+    site_options = check.mapping(outputs.get("site_options"), "outputs.site_options")
+    check.unknown_keys(site_options, SITE_OPTION_KEYS, "outputs.site_options")
+    check.number(site_options.get("max_points"), "outputs.site_options.max_points")
+    check.string_list(site_options.get("variables"), "outputs.site_options.variables")
+    max_bytes = site_options.get("max_bytes")
+    if max_bytes is not None:
+        try:
+            parse_size(max_bytes)
+        except ValueError as problem:
+            check.error("outputs.site_options.max_bytes", str(problem))
     options = check.mapping(outputs.get("video_options"), "outputs.video_options")
     check.string(options.get("variable"), "outputs.video_options.variable")
     check.number(options.get("fps"), "outputs.video_options.fps")
@@ -275,6 +307,7 @@ def validate_manifest_document(raw: Any, path: str | Path) -> list[Finding]:
         check.error("campaign", "is required and must contain a name")
     else:
         check.string(campaign.get("id"), f"{identity_name}.id")
+        check.string(campaign.get("date"), f"{identity_name}.date")
         if not campaign.get("name"):
             check.error(f"{identity_name}.name", "is required")
     _check_inputs(check, raw, path)

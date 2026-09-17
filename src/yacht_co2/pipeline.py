@@ -11,15 +11,16 @@ import xarray as xr
 from loguru import logger
 
 from .collocate import collocate_track, resolve_air_co2
-from .export import export_dataset
+from .export import export_dataset, netcdf_encoding
 from .ingest import fetch_zenodo_logs, read_campaign
 from .manifest import CampaignManifest, load_manifest
+from .naming import output_name, output_stem
 from .project import load_platform
 from .providers import ProductProvider, fetch_products
 from .qc import apply_qc
 from .report import summarise, write_report
 from .science import calibrate_co2, derive_fco2, derive_flux, derive_pco2
-from .site import build_site
+from .site import build_site, site_filename
 from .video import render_video
 
 
@@ -64,9 +65,7 @@ class Pipeline:
             cache = self.manifest.resolve_path(
                 self.manifest.outputs.get("cache", ".cache/yacht-co2")
             )
-            source: str | Path | list[Path] = fetch_zenodo_logs(
-                str(repository), logs, cache
-            )
+            source: str | Path | list[Path] = fetch_zenodo_logs(str(repository), logs, cache)
         else:
             source = self.manifest.resolve_path(logs)
         return read_campaign(source, timezone=str(self.manifest.inputs.get("timezone", "UTC")))
@@ -118,6 +117,14 @@ class Pipeline:
             enriched = derive_flux(enriched, self.manifest.flux)
         return enriched, products, statuses
 
+    def _stem(self, kind: str) -> str:
+        """Name one of this campaign's artifacts, without an extension."""
+        return output_stem(self.manifest.name, self.manifest.date, kind)
+
+    def _name(self, kind: str, extension: str) -> str:
+        """Name one of this campaign's artifacts, extension included."""
+        return output_name(self.manifest.name, self.manifest.date, kind, extension)
+
     def run(
         self,
         *,
@@ -143,30 +150,44 @@ class Pipeline:
         artifacts: dict[str, Path] = {}
         if export:
             artifacts.update(
-                export_dataset(ds, output, self.manifest.outputs.get("formats", ["netcdf", "csv"]))
+                export_dataset(
+                    ds,
+                    output,
+                    self.manifest.outputs.get("formats", ["netcdf"]),
+                    stem=self._stem("track"),
+                )
             )
             for name, product in products.items():
-                path = output / "products" / f"{name}.nc"
+                path = output / "products" / self._name(f"product-{name}", "nc")
                 path.parent.mkdir(parents=True, exist_ok=True)
-                product.to_netcdf(path, engine="h5netcdf")
+                product.to_netcdf(path, engine="h5netcdf", encoding=netcdf_encoding(product))
                 artifacts[f"product:{name}"] = path
         make_site = self.manifest.outputs.get("site", False) if site is None else site
         if make_site:
-            artifacts["site"] = build_site(
-                ds, output / "site", title=self.manifest.name, qc_config=self.manifest.qc
+            site_options: dict[str, Any] = self.manifest.outputs.get("site_options", {})
+            # One file beside the other products is the default; a folder of
+            # assets needing a server is the deliberate alternative.
+            one_file = bool(self.manifest.outputs.get("single_html", True))
+            destination = (
+                output / site_filename(self.manifest.name, self.manifest.date)
+                if one_file
+                else output / self._stem("site")
             )
-            if self.manifest.outputs.get("single_html", False):
-                artifacts["single_html"] = build_site(
-                    ds,
-                    output / "site.html",
-                    title=self.manifest.name,
-                    single_file=True,
-                    qc_config=self.manifest.qc,
-                )
+            artifacts["site"] = build_site(
+                ds,
+                destination,
+                title=self.manifest.title,
+                single_file=one_file,
+                qc_config=self.manifest.qc,
+                phase_config=self.manifest.phases,
+                **site_options,
+            )
         make_video = self.manifest.outputs.get("video", False) if video is None else video
         if make_video:
             video_config: dict[str, Any] = self.manifest.outputs.get("video_options", {})
-            artifacts["video"] = render_video(ds, output / "track.mp4", **video_config)
+            artifacts["video"] = render_video(
+                ds, output / self._name("video", "mp4"), **video_config
+            )
         summary: dict[str, Any] = {}
         if report:
             summary = summarise(
@@ -176,6 +197,6 @@ class Pipeline:
                 artifacts=artifacts,
                 products=statuses,
             )
-            artifacts.update(write_report(summary, output))
+            artifacts.update(write_report(summary, output, stem=self._stem("report")))
         logger.success("Pipeline complete for {}", self.manifest.name)
         return RunResult(ds, products, artifacts, statuses, summary)

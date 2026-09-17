@@ -3,7 +3,7 @@
 STYLE = """
 :root{color-scheme:light;font:15px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--bg:#f3f7f8;--panel:#fff;--ink:#102a33;--muted:#587079;--border:#dbe6e9;--sea:#e4f1f4;--accent:#e6533d;--teal:#087e8b;--teal-soft:#e8f5f6;--warning:#9b5700;--warning-bg:#fff4dc;--shadow:0 4px 18px #0b2b3412}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink)}button,select{font:inherit}button,select,input{accent-color:var(--teal)}button{cursor:pointer}
-.masthead{display:flex;justify-content:space-between;align-items:end;gap:1.5rem;padding:1.15rem max(1.25rem,calc((100vw - 1500px)/2));background:#073b4c;color:white}.masthead h1{margin:.05rem 0 0;font-size:clamp(1.65rem,2vw,2.15rem);line-height:1.15}.eyebrow{margin:0;color:var(--muted);font-size:.72rem;font-weight:750;letter-spacing:.09em;text-transform:uppercase}.masthead .eyebrow{color:#b9d6de}.toggle-wrap{position:relative}.toggle{display:inline-flex;align-items:center;gap:.55rem;min-height:44px;font-weight:650;white-space:nowrap}.toggle input{width:1.15rem;height:1.15rem}.qc-popover{position:absolute;z-index:1001;top:calc(100% + .45rem);right:0;width:min(620px,calc(100vw - 2rem));padding:.8rem;border:1px solid #cfdcdf;border-radius:9px;background:#fff;color:#29454e;box-shadow:0 8px 24px #062a3540;font-size:.78rem;font-weight:500;line-height:1.35;white-space:normal;opacity:0;pointer-events:none;transform:translateY(-3px);transition:opacity .15s,transform .15s}.toggle-wrap:hover .qc-popover,.toggle-wrap:focus-within .qc-popover{opacity:1;pointer-events:auto;transform:translateY(0)}.qc-popover>strong,.qc-intro{display:block}.qc-popover>strong{margin-bottom:.15rem;font-size:.86rem}.qc-intro{margin-bottom:.55rem;color:#587079}.qc-table-wrap{display:block;max-height:min(58vh,390px);overflow:auto}.qc-popover table{font-size:.74rem;white-space:normal}.qc-popover th,.qc-popover td{padding:.34rem .42rem;text-align:left;color:#29454e;vertical-align:top}.qc-popover thead th{color:#587079}.qc-popover tbody th{font-size:.74rem;text-transform:none;letter-spacing:0}
+.masthead{display:flex;justify-content:space-between;align-items:end;gap:1.5rem;padding:1.15rem max(1.25rem,calc((100vw - 1500px)/2));background:#073b4c;color:white}.masthead h1{margin:.05rem 0 0;font-size:clamp(1.65rem,2vw,2.15rem);line-height:1.15}.eyebrow{margin:0;color:var(--muted);font-size:.72rem;font-weight:750;letter-spacing:.09em;text-transform:uppercase}.masthead .eyebrow{color:#b9d6de}.masthead-controls{display:flex;align-items:center;gap:1.1rem;flex-wrap:wrap}.phase-field{color:#b9d6de}.phase-field select{min-height:40px;padding:.45rem 2rem .45rem .6rem;border:1px solid #3d6d80;border-radius:7px;background:#0d4a5e;color:#fff}.toggle-wrap{position:relative}.toggle{display:inline-flex;align-items:center;gap:.55rem;min-height:44px;font-weight:650;white-space:nowrap}.toggle input{width:1.15rem;height:1.15rem}.qc-popover{position:absolute;z-index:1001;top:calc(100% + .45rem);right:0;width:min(620px,calc(100vw - 2rem));padding:.8rem;border:1px solid #cfdcdf;border-radius:9px;background:#fff;color:#29454e;box-shadow:0 8px 24px #062a3540;font-size:.78rem;font-weight:500;line-height:1.35;white-space:normal;opacity:0;pointer-events:none;transform:translateY(-3px);transition:opacity .15s,transform .15s}.toggle-wrap:hover .qc-popover,.toggle-wrap:focus-within .qc-popover{opacity:1;pointer-events:auto;transform:translateY(0)}.qc-popover>strong,.qc-intro{display:block}.qc-popover>strong{margin-bottom:.15rem;font-size:.86rem}.qc-intro{margin-bottom:.55rem;color:#587079}.qc-table-wrap{display:block;max-height:min(58vh,390px);overflow:auto}.qc-popover table{font-size:.74rem;white-space:normal}.qc-popover th,.qc-popover td{padding:.34rem .42rem;text-align:left;color:#29454e;vertical-align:top}.qc-popover thead th{color:#587079}.qc-popover tbody th{font-size:.74rem;text-transform:none;letter-spacing:0}
 main{display:grid;grid-template-columns:minmax(320px,1fr) minmax(320px,1fr);gap:1rem;max-width:1532px;margin:auto;padding:1rem}.panel,.chart-panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow)}.panel{padding:1.1rem}.panel-heading,.section-heading,.chart-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:1rem}.panel-heading h2,.section-heading h2,.chart-heading h3{margin:.12rem 0 0;line-height:1.2}.panel-heading h2,.section-heading h2{font-size:1.3rem}.chart-heading h3{font-size:1.05rem}
 #map{width:100%;height:390px;margin-top:.9rem;background:var(--sea);border:1px solid var(--border);border-radius:9px;overflow:hidden}.compact-field{display:grid;gap:.2rem;color:var(--muted);font-size:.78rem;font-weight:650}.compact-field select,.line-select{min-height:40px;padding:.45rem 2.2rem .45rem .65rem;border:1px solid #b9cbd0;border-radius:7px;background:var(--panel);color:var(--ink)}
 .map-legend{display:grid;grid-template-columns:auto minmax(90px,170px) auto;align-items:center;justify-content:end;gap:.5rem;margin-top:.65rem;color:var(--muted);font-size:.78rem;font-variant-numeric:tabular-nums}.colour-bar{height:.45rem;border-radius:99px;background:linear-gradient(90deg,#5e4fa2,#3288bd,#66c2a5,#abdda4,#e6f598,#ffffbf,#fee08b,#fdae61,#f46d43,#d53e4f,#9e0142)}.legend-title{grid-column:1/-1;text-align:right;font-weight:650;color:var(--ink)}.track-tooltip strong,.track-tooltip span{display:block}.track-tooltip strong{margin-bottom:.12rem}.track-tooltip span{color:#405961;font-size:.78rem;font-variant-numeric:tabular-nums}
@@ -29,6 +29,14 @@ function colorFor(value){const t=Math.min(1,Math.max(0,value))*(spectralR.length
 const lineColours=['#007f86','#d2604b','#6f5aa7','#bd8218','#3f78b5','#4f8a67','#b24f78','#526f78'];
 const variableColours=new Map();
 const timestamps=S.time.map(Date.parse), good=S.qc.map(x=>x===0);
+// The instrument cycles through sampling phases -- seawater, air, gas standards
+// -- so the page is filtered by phase as well as by QC, independently: a phase
+// the QC excludes is still viewable with the QC filter off.
+const phases=S.phase||null, phaseMeta=S.phase_meta||{};
+let phaseFilter='all';
+function phaseName(code){const named=phaseMeta[String(code)];return code===-1?'No phase recorded':named?`${named} (${code})`:`Phase ${code}`}
+function phaseOk(i){return phaseFilter==='all'||!phases||phases[i]===phaseFilter}
+function included(i){return (!q('#good').checked||good[i])&&phaseOk(i)}
 let mapVariable=S.variables[0], selectedIndex=0, nextChartId=2, activeRangeChartId=null;
 const defaultChartVariables=['fco2_seawater','raw_watertemp'].filter(name=>S.variables.includes(name));
 let charts=[{id:1,variables:defaultChartVariables.length?defaultChartVariables:[S.variables[0]],x:'time',range:null}];
@@ -57,7 +65,7 @@ function optionGroups(select,allowed=S.variables){
  select.replaceChildren();
  for(const [title,names] of groups){if(!names.length)continue;const group=document.createElement('optgroup');group.label=title;for(const name of names){const o=document.createElement('option');o.value=name;o.textContent=label(name)+(unit(name)?` (${unit(name)})`:'');group.append(o)}select.append(group)}
 }
-function eligibleIndices(){return S.time.map((_,i)=>i).filter(i=>!q('#good').checked||good[i])}
+function eligibleIndices(){return S.time.map((_,i)=>i).filter(included)}
 function nearestEligible(i){const eligible=eligibleIndices();if(!eligible.length)return Math.max(0,Math.min(S.time.length-1,i));let lo=0,hi=eligible.length-1;while(lo<hi){const mid=Math.floor((lo+hi)/2);if(eligible[mid]<i)lo=mid+1;else hi=mid}const before=Math.max(0,lo-1);return Math.abs(eligible[before]-i)<=Math.abs(eligible[lo]-i)?eligible[before]:eligible[lo]}
 function stepSelection(delta){const eligible=eligibleIndices(),pos=eligible.indexOf(selectedIndex);if(!eligible.length)return;const next=pos<0?(delta>0?0:eligible.length-1):Math.max(0,Math.min(eligible.length-1,pos+delta));move(eligible[next])}
 function gapThreshold(){const diffs=[];for(let i=1;i<timestamps.length;i++){const d=timestamps[i]-timestamps[i-1];if(d>0)diffs.push(d)}if(!diffs.length)return Infinity;diffs.sort((a,b)=>a-b);const median=diffs[Math.floor(diffs.length/2)];return Math.max(median*5,10*60*1000)}
@@ -86,9 +94,10 @@ function xValue(chart,i){return chart.x==='time'?timestamps[i]:chart.x==='lat'?S
 function focusedIndices(){const chart=charts.find(c=>c.id===activeRangeChartId);if(!chart||!chart.range)return null;const [lo,hi]=chart.range;return new Set(S.time.map((_,i)=>i).filter(i=>{const v=xValue(chart,i);return finite(v)&&v>=lo&&v<=hi}))}
 function trackTooltip(i,value){const el=document.createElement('div');el.className='track-tooltip';const primary=document.createElement('strong'),detail=document.createElement('span');primary.textContent=`${label(mapVariable)}: ${finite(value)?value.toFixed(2):'missing'}${unit(mapVariable)?' '+unit(mapVariable):''}`;detail.textContent=`${fmtTime(S.time[i]).replace('T',' ')} · ${S.lat[i].toFixed(4)}°, ${S.lon[i].toFixed(4)}°`;el.append(primary,detail);return el}
 function drawMap(){
- const keep=S.time.map((_,i)=>!q('#good').checked||good[i]),focus=focusedIndices(),values=S.data[mapVariable],scaleValues=values.filter((v,i)=>good[i]&&finite(v)),[lo,hi]=percentileRange(scaleValues,MAP_CLIP[0],MAP_CLIP[1]);
+ const keep=S.time.map((_,i)=>included(i)),focus=focusedIndices(),values=S.data[mapVariable],scaleValues=values.filter((v,i)=>good[i]&&phaseOk(i)&&finite(v)),[lo,hi]=percentileRange(scaleValues,MAP_CLIP[0],MAP_CLIP[1]);
  if(trackLayer){trackLayer.clearLayers();const bounds=[];S.lon.forEach((lon,i)=>{if(!keep[i]||!finite(lon)||!finite(S.lat[i]))return;bounds.push([S.lat[i],lon]);const v=values[i],t=finite(v)?(v-lo)/(hi-lo||1):null,inFocus=!focus||focus.has(i),outside=focus&&!inFocus,marker=L.circleMarker([S.lat[i],lon],{radius:outside?2.2:3.3,weight:0,fillColor:outside?'#98a7ab':t===null?'#7d8c90':colorFor(t),fillOpacity:outside?.38:.92}).addTo(trackLayer);marker.bindTooltip(trackTooltip(i,v),{direction:'top',offset:[0,-4],opacity:.96})});if(bounds.length&&!mapHasFit){map.fitBounds(L.latLngBounds(bounds),{padding:[18,18]});mapHasFit=true}}
- const count=focus?[...focus].filter(i=>keep[i]).length:null;q('#legend-title').textContent=`Track colour · ${label(mapVariable)}${unit(mapVariable)?` (${unit(mapVariable)})`:''}${count===null?'':` · ${count} observations in chart window`}`;
+ const count=focus?[...focus].filter(i=>keep[i]).length:null,empty=!keep.some(Boolean);
+ q('#legend-title').textContent=`Track colour · ${label(mapVariable)}${unit(mapVariable)?` (${unit(mapVariable)})`:''}${count===null?'':` · ${count} observations in chart window`}${empty?' · nothing to show; the QC filter and the phase exclude each other':''}`;
  // Observations beyond the clipped limits keep the end colour, so the bound
  // is marked as inclusive rather than read as the extreme of the data.
  const [dataLo,dataHi]=extent(scaleValues);
@@ -98,7 +107,7 @@ function seriesData(name,chart){
  const xs=[],ys=[],ids=[],values=S.data[name];
  for(let i=0;i<S.time.length;i++){
   if(i&&timestamps[i]-timestamps[i-1]>gapLimit){xs.push(null);ys.push(null);ids.push(null)}
-  const x=xValue(chart,i);xs.push(chart.x==='time'?S.time[i]:finite(x)?x:null);ys.push((!q('#good').checked||good[i])&&finite(values[i])?values[i]:null);ids.push(i);
+  const x=xValue(chart,i);xs.push(chart.x==='time'?S.time[i]:finite(x)?x:null);ys.push(included(i)&&finite(values[i])?values[i]:null);ids.push(i);
  }
  return {xs,ys,ids};
 }
@@ -137,5 +146,13 @@ function renderChartControls(){
  }
  draw();
 }
-optionGroups(q('#map-variable'));q('#map-variable').value=mapVariable;q('#map-variable').onchange=e=>{mapVariable=e.target.value;drawMap()};q('#good').onchange=draw;q('#add-chart').onclick=()=>{charts.push({id:nextChartId++,variables:[mapVariable],x:'time',range:null});renderChartControls()};selectedIndex=nearestEligible(0);renderChartControls();
+function buildPhasePicker(){
+ const field=q('#phase-field'),select=q('#phase');if(!field||!select||!phases)return;
+ const codes=[...new Set(phases)].sort((a,b)=>a-b);if(codes.length<2)return;
+ field.hidden=false;select.replaceChildren();
+ const all=document.createElement('option');all.value='all';all.textContent='All phases';select.append(all);
+ for(const code of codes){const o=document.createElement('option');o.value=String(code);o.textContent=phaseName(code);select.append(o)}
+ select.value='all';select.onchange=()=>{phaseFilter=select.value==='all'?'all':Number(select.value);draw()};
+}
+buildPhasePicker();optionGroups(q('#map-variable'));q('#map-variable').value=mapVariable;q('#map-variable').onchange=e=>{mapVariable=e.target.value;drawMap()};q('#good').onchange=draw;q('#add-chart').onclick=()=>{charts.push({id:nextChartId++,variables:[mapVariable],x:'time',range:null});renderChartControls()};selectedIndex=nearestEligible(0);renderChartControls();
 """

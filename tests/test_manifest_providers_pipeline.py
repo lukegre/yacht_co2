@@ -75,7 +75,11 @@ def test_build_manifest_uses_zenodo_name_and_processing_defaults(tmp_path):
 
     document = yaml.safe_load(path.read_text())
     assert path == folder / "manifest.yaml"
-    assert document["campaign"] == {"id": "campaign", "name": "Défi Azimut (solo)"}
+    assert document["campaign"] == {
+        "id": "campaign",
+        "name": "Défi Azimut (solo)",
+        "date": "2022-09",
+    }
     assert document["inputs"] == {
         "repository": "10.5281/zenodo.12345",
         "logs": "./*.log",
@@ -83,7 +87,7 @@ def test_build_manifest_uses_zenodo_name_and_processing_defaults(tmp_path):
     }
     assert document["calibration"]["method"] == "instrument"
     assert document["equilibrator"]["water_temperature"] == "watertemp"
-    assert document["outputs"]["formats"] == ["csv"]
+    assert document["outputs"]["formats"] == ["netcdf"]
     assert load_manifest(path).name == "Défi Azimut (solo)"
     assert any("Loading manifest defaults" in message for message in messages)
     assert any("Resolved campaign id 'campaign'" in message for message in messages)

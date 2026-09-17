@@ -6,7 +6,7 @@ import xarray as xr
 from loguru import logger
 
 from yacht_co2.manifest import load_manifest
-from yacht_co2.report import render_markdown, summarise, write_report
+from yacht_co2.report import summarise, write_report
 from yacht_co2.schema import QCFlag
 
 
@@ -103,7 +103,7 @@ def test_platform_defaults_fill_the_identity_table():
     summary = summarise(dataset(), platform={"vessel_name": "YOROSHIKU", "co2_sensor": "LI850"})
 
     assert summary["campaign"]["vessel_name"] == "YOROSHIKU"
-    assert "| vessel_name | YOROSHIKU |" in render_markdown(summary)
+    assert summary["campaign"]["co2_sensor"] == "LI850"
 
 
 def test_manifest_overrides_a_platform_default(tmp_path):
@@ -129,7 +129,7 @@ def test_summary_is_json_serialisable_without_numpy_scalars():
     assert "pco2_seawater" in text
 
 
-def test_write_report_emits_both_renderings(tmp_path):
+def test_write_report_writes_the_json_report(tmp_path):
     summary = summarise(dataset())
 
     messages = []
@@ -140,23 +140,10 @@ def test_write_report_emits_both_renderings(tmp_path):
         logger.remove(sink_id)
 
     assert json.loads(paths["report_json"].read_text())["quality"]["good_records"] == 4
-    markdown = paths["report_markdown"].read_text()
-    assert markdown.startswith("# Fastnet 2023")
-    assert "## Quality control" in markdown
-    assert "physical_range" in markdown
-    assert messages == [
-        f"Wrote JSON report to {tmp_path / 'report.json'}",
-        f"Wrote Markdown report to {tmp_path / 'REPORT.md'}",
-    ]
-
-
-def test_markdown_handles_a_clean_dataset_with_no_flags():
-    ds = dataset()
-    ds["qc_flag"] = ("time", np.zeros(ds.sizes["time"], dtype="uint16"))
-
-    markdown = render_markdown(summarise(ds))
-
-    assert "No QC flags were raised." in markdown
+    assert messages == [f"Wrote JSON report to {tmp_path / 'report.json'}"]
+    # The report is data, so nothing renders it to Markdown any more.
+    assert set(paths) == {"report_json"}
+    assert not (tmp_path / "REPORT.md").exists()
 
 
 def test_empty_track_summarises_without_raising():

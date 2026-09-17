@@ -14,6 +14,7 @@ from loguru import logger
 from .errors import ManifestError
 from .project import read_yaml
 from .validation import Finding, errors, validate_manifest_document
+from .zenodo import CONFIG_NAME as ZENODO_CONFIG_NAME
 
 MANIFEST_NAME = "manifest.yaml"
 DEFAULTS_PATH = Path(__file__).resolve().parents[2] / "examples" / "defaults.yaml"
@@ -40,6 +41,16 @@ class CampaignManifest:
     @property
     def name(self) -> str:
         return str(self.campaign["name"])
+
+    @property
+    def date(self) -> str:
+        """Campaign date, as ``YYYY``, ``YYYY-MM`` or ``YYYY-MM-DD``."""
+        return str(self.campaign.get("date") or "").strip()
+
+    @property
+    def title(self) -> str:
+        """Name the campaign the way a reader should see it: name and date."""
+        return f"{self.name} ({self.date})" if self.date else self.name
 
     @property
     def expedition(self) -> dict[str, Any]:
@@ -89,7 +100,7 @@ def load_manifest(path: str | Path) -> CampaignManifest:
         raise ManifestError(f"invalid manifest {path}: {detail}")
     return CampaignManifest(
         path=path,
-        campaign=raw.get("campaign", raw.get("expedition", {})),
+        campaign=_dated(raw.get("campaign", raw.get("expedition", {})), path),
         inputs=raw["inputs"],
         columns=raw.get("columns", {}),
         phases=raw.get("phases", {}),
@@ -102,6 +113,25 @@ def load_manifest(path: str | Path) -> CampaignManifest:
         outputs=raw.get("outputs", {}),
         raw=raw,
     )
+
+
+def _dated(campaign: dict[str, Any], path: Path) -> dict[str, Any]:
+    """Return the campaign identity, dating it from ``zenodo.yaml`` if it is not.
+
+    ``campaign.date`` is written by :func:`build_manifest`, but a manifest built
+    before it existed carries none while its folder still knows: the date is the
+    one the archived record was named with.
+    """
+    if not isinstance(campaign, dict) or campaign.get("date"):
+        return campaign
+    zenodo_path = path.parent / ZENODO_CONFIG_NAME
+    if not zenodo_path.is_file():
+        return campaign
+    date = str(read_yaml(zenodo_path).get("campaign_date") or "").strip()
+    if not date:
+        return campaign
+    logger.info("Dating the campaign {} from {}", date, zenodo_path)
+    return {**campaign, "date": date}
 
 
 def build_manifest(
@@ -135,6 +165,7 @@ def build_manifest(
             f"{zenodo_path} needs campaign or title to supply campaign.name"
         )
 
+    date = str(zenodo_document.get("campaign_date") or "").strip()
     campaign_id = str(zenodo_document.get("slug") or zenodo_path.parent.name).strip()
     if not campaign_id or any(character.isspace() for character in campaign_id):
         raise ManifestError(f"invalid campaign id derived from Zenodo slug: {campaign_id!r}")
@@ -148,6 +179,8 @@ def build_manifest(
 
     document = dict(template)
     document["campaign"] = {"id": campaign_id, "name": name}
+    if date:
+        document["campaign"]["date"] = date
     document["inputs"] = {**document.get("inputs", {}), "repository": repository}
     document.pop("expedition", None)
     destination = Path(output).resolve() if output is not None else zenodo_path.with_name(MANIFEST_NAME)

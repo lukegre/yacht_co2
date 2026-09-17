@@ -62,6 +62,35 @@ def test_every_manifest_problem_is_reported_at_once(tmp_path):
     ]
 
 
+def test_site_options_are_checked_before_the_page_is_built(tmp_path):
+    """A budget, a point cap and a column list, each reported where it is wrong."""
+    path = write_manifest(
+        tmp_path,
+        outputs={
+            "site": True,
+            "site_options": {
+                "max_bytes": "ten megabytes",
+                "max_points": "lots",
+                "variables": ["fco2_seawater", 7],
+            },
+        },
+    )
+    findings = validate_manifest_document(yaml.safe_load(path.read_text()), path)
+
+    assert messages(findings, "error") == [
+        "outputs.site_options.max_points: must be a number, not str",
+        "outputs.site_options.variables[1]: must be a column name, not 7",
+        "outputs.site_options.max_bytes: 'ten megabytes' is not a size such as "
+        "'10 MB', '512 kB' or '8 MiB'",
+    ]
+    # A budget written the way an attachment limit is quoted passes.
+    path = write_manifest(
+        tmp_path,
+        outputs={"site": True, "site_options": {"max_bytes": "8 MB", "variables": ["raw_co2"]}},
+    )
+    assert validate_manifest_document(yaml.safe_load(path.read_text()), path) == []
+
+
 @pytest.mark.parametrize(
     ("overrides", "expected"),
     [

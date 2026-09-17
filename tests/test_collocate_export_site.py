@@ -1,11 +1,15 @@
+import json
+
+import h5py
 import numpy as np
 import pytest
 import xarray as xr
 
 from yacht_co2.collocate import collocate_track, resolve_air_co2
 from yacht_co2.export import datasets_identical, export_dataset
+from yacht_co2.naming import output_name, output_stem
 from yacht_co2.schema import validate_dataset
-from yacht_co2.site import build_site
+from yacht_co2.site import build_site, parse_size, site_filename
 
 
 def track():
@@ -65,6 +69,27 @@ def test_air_priority():
     assert list(out.air_co2_source.values) == ["observations", "observations"]
 
 
+def test_netcdf_export_is_compressed(tmp_path):
+    ds = track()
+    # A long, highly compressible series: the gain has to be visible in bytes.
+    ds = ds.isel(time=0, drop=False).expand_dims(time=1)
+    ds = xr.concat([ds] * 500, dim="time")
+    ds["time"] = ("time", np.arange("2023-01-01", "2023-01-01T08:20", dtype="datetime64[m]")[:500])
+
+    path = export_dataset(ds, tmp_path, ["netcdf"])["netcdf"]
+    plain = tmp_path / "plain.nc"
+    ds.to_netcdf(plain, engine="h5netcdf")
+
+    assert path.stat().st_size < plain.stat().st_size
+    # Every numeric variable and coordinate carries the deflate filter.
+    with h5py.File(path) as handle:
+        assert handle["lat"].compression == "gzip"
+        assert handle["time"].compression == "gzip"
+        # Strings cannot be deflated, so they are written as they are.
+        assert handle["source_file"].compression is None
+    assert datasets_identical(path, plain)
+
+
 def test_exports_and_site(tmp_path):
     ds = track()
     ds["value"] = ("time", [1.0, np.nan])
@@ -116,11 +141,92 @@ def test_exports_and_site(tmp_path):
     assert "Chlorophyll a" in rendered
     assert "Dissolved oxygen" in rendered
     assert "yaxis2" in rendered
-    assert 'type=range' not in rendered
+    assert "type=range" not in rendered
     assert "NaN" not in rendered
     assert datasets_identical(paths["netcdf"], paths["zarr"])
     with pytest.raises(ValueError, match="unsupported"):
         export_dataset(ds, tmp_path, ["parquet"])
+
+
+def phase_track(count=40):
+    """A track alternating between the seawater and air sampling phases."""
+    time = np.datetime64("2023-01-01", "m") + np.arange(count)
+    phase = np.where(np.arange(count) % 4 < 3, 5.0, 22.0)
+    return xr.Dataset(
+        {
+            "lat": ("time", np.linspace(0, 1, count)),
+            "lon": ("time", np.linspace(10, 11, count)),
+            "fco2_seawater": ("time", np.linspace(380, 420, count), {"units": "uatm"}),
+            "raw_watertemp": ("time", np.linspace(12, 15, count)),
+            "raw_salinity": ("time", np.linspace(34, 35, count)),
+            "raw_sampling_phase": ("time", phase),
+            # The air phase is outside qc.analysis_phases, so it is flagged.
+            "qc_flag": ("time", np.where(phase == 5, 0, 8).astype("uint16")),
+        },
+        coords={"time": time.astype("datetime64[ns]")},
+    )
+
+
+def model_of(path):
+    text = path.read_text()
+    return json.loads(text.split("window.YACHT_DATA=")[1].split(";window.YACHT_REPORT")[0])
+
+
+def test_the_page_carries_the_sampling_phase_and_names_it(tmp_path):
+    """Phase travels whatever else is dropped, so the page can be filtered by it."""
+    path = build_site(
+        phase_track(),
+        tmp_path / "phase.html",
+        variables=["fco2_seawater"],
+        phase_config={"analysis": [5], "air": [22]},
+    )
+    model = model_of(path)
+
+    assert sorted(set(model["phase"])) == [5, 22]
+    assert model["phase_meta"] == {"5": "Seawater", "22": "Air"}
+    # The picker filters the map and the charts alongside the QC toggle, not
+    # instead of it, so a flagged phase is still viewable with QC off.
+    rendered = path.read_text()
+    assert 'aria-label="Sampling phase to display"' in rendered
+    assert "function phaseOk(i)" in rendered
+    assert "function included(i)" in rendered
+    assert "eligibleIndices(){return S.time.map((_,i)=>i).filter(included)}" in rendered
+
+
+def test_site_variables_choose_what_the_page_stores(tmp_path):
+    """Only the requested columns travel, in the order asked for."""
+    path = build_site(
+        phase_track(),
+        tmp_path / "chosen.html",
+        variables=["raw_salinity", "fco2_seawater", "not_measured"],
+    )
+    model = model_of(path)
+
+    assert model["variables"] == ["raw_salinity", "fco2_seawater"]
+    assert "raw_watertemp" not in model["data"]
+    # Time, position, QC and phase are what the page is drawn from, so they stay.
+    assert set(model) >= {"time", "lat", "lon", "qc", "phase"}
+    # A name the track does not hold is reported and skipped, not fatal.
+    assert "not_measured" not in model["variables"]
+    # Every numeric column travels when nothing is asked for.
+    everything = model_of(build_site(phase_track(), tmp_path / "all.html"))
+    assert "raw_watertemp" in everything["variables"]
+
+
+def test_a_page_budget_may_be_written_as_a_size(tmp_path):
+    """max_bytes takes '120 kB' as readily as a number, and the page obeys it."""
+    assert parse_size("10 MB") == 10_000_000
+    assert parse_size("8 MiB") == 8 * 2**20
+    assert parse_size(2048) == 2048
+    with pytest.raises(ValueError, match="not a size"):
+        parse_size("ten megabytes")
+
+    ds = phase_track(4000)
+    big = build_site(ds, tmp_path / "big.html", max_bytes="4 MB")
+    small = build_site(ds, tmp_path / "small.html", max_bytes="120 kB")
+
+    assert small.stat().st_size <= 120_000
+    assert len(model_of(small)["time"]) < len(model_of(big)["time"]) == 4000
 
 
 def test_schema_and_collocation_tolerance_errors():
@@ -133,3 +239,30 @@ def test_schema_and_collocation_tolerance_errors():
     out = collocate_track(track(), product, time_tolerance="1h")
     assert np.isnan(out.x).all()
     assert np.all(out.qc_flag.values & 256)
+
+
+def test_every_artifact_is_named_for_its_campaign():
+    """One rule names them all, so products from many campaigns never collide."""
+    # A hyphen separates the fields; within a field it becomes an underscore.
+    assert output_name("Fastnet Race", "2023-07-24", "track", "nc") == (
+        "yacht_co2-fastnet_race-2023_07_24-track.nc"
+    )
+    assert output_name("Fastnet Race", "2023-07-24", "report", "json") == (
+        "yacht_co2-fastnet_race-2023_07_24-report.json"
+    )
+    # A provider name carrying a dot stays one field of the name.
+    assert output_name("Fastnet", "2023-06", "product-cmems.glorys", "nc") == (
+        "yacht_co2-fastnet-2023_06-product-cmems_glorys.nc"
+    )
+    # The hosted site bundle is a folder, so it is named without an extension.
+    assert output_stem("Fastnet", "2023-06", "site") == "yacht_co2-fastnet-2023_06-site"
+    assert site_filename("Fastnet", "2023-06") == "yacht_co2-fastnet-2023_06-site.html"
+    with pytest.raises(ValueError, match="cannot both be empty"):
+        output_name("", "", "track", "nc")
+
+
+def test_export_names_every_format_from_one_stem(tmp_path):
+    paths = export_dataset(track(), tmp_path, ["netcdf", "csv"], stem="yacht_co2-fastnet-track")
+
+    assert paths["netcdf"].name == "yacht_co2-fastnet-track.nc"
+    assert paths["csv"].name == "yacht_co2-fastnet-track.csv"

@@ -1,59 +1,94 @@
-# all paths are relative to the manifest yaml file.
+# Template that `yacht-co2 build-manifest` fills in: everything here is copied
+# into a new manifest.yaml, with the campaign identity and the Zenodo DOI taken
+# from the folder's zenodo.yaml. Every path is relative to the manifest.
+#
+# Column names below (`co2`, `h2o`, `watertemp`, ...) are SubCtech OceanPack log
+# headers, lower-cased. Each is looked up as itself first and then as `raw_<name>`,
+# which is how the ingest stores unmodified log columns.
+
 campaign:
   id: ... # from the zenodo slug or data-folder name
   name: ... # from zenodo.yaml
+  date: ... # campaign_date from zenodo.yaml; names the site with the campaign
 
 inputs:
   repository: ... # Zenodo DOI copied from zenodo.yaml by build-manifest
-  logs: ./*.log
-  timezone: UTC
+  logs: ./*.log # glob selecting the raw logs, inside the record or the folder
+  timezone: UTC # timezone the log timestamps are in; they are stored as UTC
 
+# Rename raw log columns, `canonical: as_logged`. Empty because the defaults
+# below already name the OceanPack headers; kept for logs that deviate.
 columns: {}
 
+# Documents what the instrument's sampling phases mean for this campaign.
+# Processing reads qc.analysis_phases and atmosphere.air_phases, not this.
 phases:
-  analysis: [ 5 ]
-  air: [ 22 ]
+  analysis: [ 5 ] # phase in which seawater is measured
+  air: [ 22 ] # phase in which the air inlet is measured
 
 calibration:
+  # instrument: trust the logger's own calibration. linear: rescale with
+  # (raw - zero_measured) * span_certified / (span_measured - zero_measured),
+  # taking zero/span from the gas-standard phases when not given as numbers.
   method: instrument
-  input: co2
+  input: co2 # column holding measured wet xCO2
 
 equilibrator:
-  h2o: h2o
-  h2o_scale: 1000
-  pressure: cellpress
+  h2o: h2o # water-vapour column, in mmol/mol
+  h2o_scale: 1000 # divisor turning that column into a mole fraction
+  pressure: cellpress # equilibration pressure, in mbar
   # Temperature of the water in contact with the equilibrator membrane. The
   # LI-850 CellTemp is its heated optical bench (~51.5 C), not water temperature.
   water_temperature: watertemp
-  sea_temperature: watertemp
+  sea_temperature: watertemp # in-situ SST the pCO2 is reported at
+  # Takahashi (1993) coefficient in exp(k * (T_sea - T_equ_water)), per °C.
   temperature_coefficient: 0.0423
 
+# Flags rather than filters: a failing check sets a QC bit and the observation
+# is kept. A record with no bit set is QC-good.
 qc:
-  analysis_phases: [ 5 ]
-  minimum_water_flow: 0.1
-  minimum_gas_flow: 0.1
+  analysis_phases: [ 5 ] # any other phase is flagged as excluded
+  minimum_water_flow: 0.1 # flag below this seawater flow (waterflow column)
+  minimum_gas_flow: 0.1 # flag below this gas flow (flowgas column)
+  # Flag anything outside these physical bounds, `column: [min, max]`.
   ranges:
-    co2: [ 100, 1000 ]
-    watertemp: [ -2.5, 45 ]
-    salinity: [ 0, 45 ]
+    co2: [ 100, 1000 ] # umol/mol
+    watertemp: [ -2.5, 45 ] # degrees Celsius
+    salinity: [ 0, 45 ] # practical salinity
 
+# Atmospheric xCO2, resolved onboard air measurement → observations → NOAA MBL.
 atmosphere:
-  air_phases: [ 22 ]
-  time_tolerance: 7D
+  air_phases: [ 22 ] # phases holding the onboard air measurement
+  time_tolerance: 7D # how far a value may be carried to a track timestamp
+  # observations_product: ...  # name of a products entry holding measured xco2_air
+  # noaa_product: ...          # name of a products entry holding the NOAA MBL curve
 
+# Remote grids to fetch and collocate onto the track; each needs a provider
+# (cmems, era5, noaa_mbl or local) and is cached under outputs.cache.
 products: []
+
 flux:
-  formulation: wanninkhof2014
-  coefficient: 0.251
+  formulation: wanninkhof2014 # documentation only; validate reports it as unread
+  coefficient: 0.251 # k = 0.251 U10^2 (Sc/660)^-0.5, in cm/hr
 
 outputs:
+  # Where every artifact is written. Each is named
+  # yacht_co2-<campaign>-<campaign date>-<kind>.<ext>, with a hyphen between
+  # the fields and an underscore within one: yacht_co2-fastnet_race-2023_07_24-track.nc
   directory: ./
-  cache: ../.cache/
-  formats: [ csv ]
-  site: true
-  single_html: true
-  video: false
+  cache: ../.cache/ # fetched logs and product grids, shared between campaigns
+  formats: [ netcdf ] # also: zarr (complete), csv (flattened track only)
+  site: true # build the interactive page
+  single_html: true # one self-contained file; false writes a -site/ folder
+  # site_options:          # passed through to the site builder
+  #   max_bytes: 10 MB     # page budget; the track is thinned until it fits
+  #   max_points: 20000    # subsample the track further, whatever its size
+  #   variables:           # columns stored in the page; all numeric ones by default
+  #     - fco2_seawater    # time, position, QC flag and sampling phase always travel
+  #     - raw_watertemp
+  #     - raw_salinity
+  video: false # needs FFmpeg on PATH; only the Python API renders it
   video_options:
-    variable: pco2_seawater
-    frame_interval: 1h
-    fps: 12
+    variable: pco2_seawater # variable plotted against the track
+    frame_interval: 1h # one frame per interval of campaign time
+    fps: 12 # playback rate

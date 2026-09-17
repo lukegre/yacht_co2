@@ -14,6 +14,7 @@ import xarray as xr
 from loguru import logger
 
 from .errors import ProviderError
+from .export import netcdf_encoding
 
 
 @dataclass(frozen=True)
@@ -241,7 +242,7 @@ def fetch_products(
                     raise ProviderError(f"unknown provider: {request.provider}")
                 product = provider.fetch(request, folder)
                 folder.mkdir(parents=True, exist_ok=True)
-                product.to_netcdf(cached, engine="h5netcdf")
+                product.to_netcdf(cached, engine="h5netcdf", encoding=netcdf_encoding(product))
                 (folder / "request.json").write_text(json.dumps(asdict(request), indent=2))
                 state = "fetched"
             product.attrs.update(provider=request.provider, request_cache_key=request.cache_key)
