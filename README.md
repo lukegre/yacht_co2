@@ -5,6 +5,13 @@ optional environmental enrichment, scientific exports, a static website, and
 synchronized MP4 video. Every raw observation is preserved; quality control is
 represented by flags rather than destructive filtering.
 
+## Binary for MacOS
+
+Download the following file:
+https://github.com/lukegre/yacht_co2/releases/download/v0.0.5-beta/yacht-co2-0.1.0-macos-arm64.zip
+
+Then, open Settings --> Privacy & Security --> scroll down to Security --> allow yacht-co2 to open
+
 ## Quick start
 
 ```bash
