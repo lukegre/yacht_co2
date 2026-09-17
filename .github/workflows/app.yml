@@ -35,9 +35,9 @@ jobs:
         # comment out macos intel because it's slooow
         # - { os: macos-15-intel, label: macOS (Intel) }
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
-    - uses: astral-sh/setup-uv@v6
+    - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       with: { enable-cache: true }
 
     - name: Install the application and its build tools
@@ -53,7 +53,7 @@ jobs:
       # for the one thing that exercises the frozen import graph end to end.
       run: uv run python packaging/smoke.py
 
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v7
       with:
         name: yacht-co2-${{ matrix.os }}
         path: |
@@ -70,18 +70,13 @@ jobs:
     permissions:
       contents: write
     steps:
-    - uses: actions/download-artifact@v4
+    - uses: actions/download-artifact@v8
       with:
         path: artifacts
         merge-multiple: true
-    - uses: softprops/action-gh-release@v3
+    - name: Create or update the release
+      uses: softprops/action-gh-release@v3
       with:
-        # Large archives are more reliable when sent to GitHub's release API
-        # one at a time rather than as concurrent uploads.
-        preserve_order: true
-        files: |
-          artifacts/*.zip
-          artifacts/*.tar.gz
         body: |
           Download the archive for your machine, unpack it, and open
           `yacht-co2` inside.
@@ -90,3 +85,32 @@ jobs:
           unidentified developer, because it is signed by nobody: on macOS,
           right-click it and choose Open; on Windows, choose More info and
           then Run anyway. README.md has the detail.
+
+    - name: Upload the release archives
+      env:
+        GH_TOKEN: ${{ github.token }}
+      shell: bash
+      run: |
+        shopt -s nullglob
+        archives=(artifacts/*.zip artifacts/*.tar.gz)
+        if (( ${#archives[@]} == 0 )); then
+          echo "::error::No release archives were downloaded"
+          exit 1
+        fi
+
+        # GitHub can transiently reject an otherwise valid release asset. Upload
+        # each archive separately so a retry only replaces the failed file.
+        for archive in "${archives[@]}"; do
+          for attempt in 1 2 3; do
+            if gh release upload "$GITHUB_REF_NAME" "$archive" --clobber; then
+              break
+            fi
+            if (( attempt == 3 )); then
+              echo "::error file=$archive::Upload failed after $attempt attempts"
+              exit 1
+            fi
+            delay=$((attempt * 10))
+            echo "Upload failed; retrying $archive in ${delay}s"
+            sleep "$delay"
+          done
+        done
