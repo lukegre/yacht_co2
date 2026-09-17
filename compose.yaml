@@ -1,0 +1,20 @@
+name: yacht-co2
+
+services:
+  app:
+    image: docker.io/lukegre/yacht-co2:${YACHT_CO2_TAG:-amd64-latest}
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platforms:
+        - linux/amd64
+    init: true
+    ports:
+      - "${YACHT_CO2_PORT:-8080}:8080"
+    volumes:
+      - ./data:/home/renku/work
+      - config:/home/renku/.config/yacht_co2
+
+volumes:
+  config:

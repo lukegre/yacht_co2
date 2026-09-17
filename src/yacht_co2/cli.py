@@ -211,7 +211,12 @@ def gui(
         file_okay=False,
         help="Folder holding the campaign folders; remembered between launches.",
     ),
+    host: str = typer.Option("127.0.0.1", help="Address to serve on."),
     port: int = typer.Option(8080, help="Port to serve on."),
+    root_path: Optional[str] = typer.Option(  # noqa: UP045 - typer needs an explicit Optional
+        None,
+        help="Reverse-proxy URL prefix; defaults to RENKU_BASE_URL_PATH when set.",
+    ),
     show: bool = typer.Option(True, help="Open a browser window on start."),
     native: bool = typer.Option(
         False,
@@ -223,7 +228,8 @@ def gui(
     The same five steps as the commands above -- archive, build a manifest,
     edit it, process, publish -- driven by forms rather than by flags, with the
     shared defaults kept in your own configuration directory so they outlive
-    any one campaign. The server listens on this machine only.
+    any one campaign. The server listens on this machine only unless ``--host``
+    is set explicitly (for example, to ``0.0.0.0`` inside a container).
     """
     try:
         from .gui import launch
@@ -241,9 +247,16 @@ def gui(
                 "install it with: uv sync --extra desktop"
             )
         # A window finds its own port, the same as the packaged application.
-        launch(data_root=data_root, port=None, show=False, native=True)
+        launch(
+            data_root=data_root,
+            host=host,
+            port=None,
+            root_path=root_path,
+            show=False,
+            native=True,
+        )
         return
-    launch(data_root=data_root, port=port, show=show)
+    launch(data_root=data_root, host=host, port=port, root_path=root_path, show=show)
 
 
 if __name__ == "__main__":

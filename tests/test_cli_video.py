@@ -99,6 +99,34 @@ def test_cli_help_and_validate(tmp_path):
     assert "valid: Test" in result.stdout
 
 
+def test_gui_cli_passes_container_network_options(monkeypatch):
+    options = {}
+    monkeypatch.setattr("yacht_co2.gui.launch", lambda **kwargs: options.update(kwargs))
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "gui",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "8080",
+            "--root-path",
+            "/sessions/example",
+            "--no-show",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert options == {
+        "data_root": None,
+        "host": "0.0.0.0",
+        "port": 8080,
+        "root_path": "/sessions/example",
+        "show": False,
+    }
+
+
 def test_cli_site_reuses_the_processed_dataset_and_is_titled_by_the_campaign(tmp_path):
     manifest = campaign_manifest(tmp_path)
     video_dataset().to_netcdf(tmp_path / "yacht_co2-fastnet-2023_06-track.nc")

@@ -14,6 +14,19 @@ from yacht_co2.manifest import packaged_defaults
 from yacht_co2.userconfig import write_settings
 
 
+def test_launch_uses_the_renku_proxy_path(monkeypatch):
+    options = {}
+    monkeypatch.setenv(app.RENKU_BASE_URL_PATH_ENV, "/sessions/example")
+    monkeypatch.setattr(app, "register_pages", lambda: None)
+    monkeypatch.setattr(app.ui, "run", lambda **kwargs: options.update(kwargs))
+
+    app.launch(host="0.0.0.0", show=False)
+
+    assert options["host"] == "0.0.0.0"
+    assert options["port"] == 8080
+    assert options["root_path"] == "/sessions/example"
+
+
 @pytest.fixture
 def campaigns(tmp_path):
     """A data root holding one untouched campaign folder."""

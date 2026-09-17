@@ -11,6 +11,7 @@ machine, without anyone remembering where it got to.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -581,11 +582,17 @@ def register_pages() -> None:
 #: columns the workbench lays its steps out in.
 WINDOW_SIZE = (1180, 860)
 
+#: Renku publishes sessions below a generated URL prefix and exposes it to the
+#: container through this environment variable.
+RENKU_BASE_URL_PATH_ENV = "RENKU_BASE_URL_PATH"
+
 
 def launch(
     *,
     data_root: Path | None = None,
+    host: str = "127.0.0.1",
     port: int | None = 8080,
+    root_path: str | None = None,
     show: bool = True,
     reload: bool = False,
     native: bool = False,
@@ -602,15 +609,23 @@ def launch(
     ``port`` of ``None`` lets NiceGUI find a free one, which is what a
     double-clicked application wants: it has no way to report that 8080 was
     taken, and nothing needs to know the number.
+
+    ``root_path`` defaults to Renku's generated session path when the
+    ``RENKU_BASE_URL_PATH`` environment variable is present. This keeps static
+    assets and websocket connections behind Renku's reverse proxy.
     """
     if data_root is not None:
         write_settings({**read_settings(), "data_root": str(Path(data_root).resolve())})
     register_pages()
+    effective_root_path = (
+        root_path if root_path is not None else os.environ.get(RENKU_BASE_URL_PATH_ENV, "")
+    )
     # ui.run blocks until the server stops, so opening the browser is left to
     # it rather than done afterwards, when nobody would be there to see it.
     ui.run(
-        host="127.0.0.1",
+        host=host,
         port=port,
+        root_path=effective_root_path,
         title="yacht-co2",
         favicon="🌊",
         # A native window is the showing, so asking for a browser too would
