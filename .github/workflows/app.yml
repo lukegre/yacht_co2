@@ -137,6 +137,9 @@ jobs:
           echo "Uploading ${name}"
           # curl, not gh: gh release upload has hung here with no output. Bound
           # the transfer (--max-time) and retry transient 5xx/timeouts only.
+          # Keep going if curl exits non-zero (e.g. timeout after retries) so the
+          # HTTP status / body still reach the explicit error path below.
+          set +e
           http_code="$(
             curl --silent --show-error --location \
               --retry 3 --retry-delay 10 \
@@ -149,8 +152,10 @@ jobs:
               --data-binary "@${archive}" \
               "${upload_url}?name=$(printf '%s' "$name" | jq -sRr @uri)"
           )"
-          if [[ "$http_code" != 201 && "$http_code" != 200 ]]; then
-            echo "::error file=${archive}::Upload failed with HTTP ${http_code}"
+          curl_status=$?
+          set -e
+          if [[ $curl_status -ne 0 || ( "$http_code" != 201 && "$http_code" != 200 ) ]]; then
+            echo "::error file=${archive}::Upload failed (curl exit ${curl_status}, HTTP ${http_code:-none})"
             cat /tmp/release-upload-body.json || true
             exit 1
           fi
