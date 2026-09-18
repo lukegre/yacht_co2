@@ -56,10 +56,13 @@ async def test_settings_cog_warns_about_missing_project_information(user: User):
     )
 
     await user.open("/")
-    warning = _one(user, "project-settings-warning")
-    assert "pointer-events-none" in warning._classes
+    banner = _one(user, "project-settings-warning")
+    # One line high, and nowhere near the cog, so it cannot swallow its clicks.
+    assert "whitespace-nowrap" in banner._classes
+    assert "bg-amber-100" in banner._classes
     assert "bg-slate-900" in _one(user, "project-settings-tooltip")._classes
     await user.should_see("project.yaml needs attention")
+    await user.should_see("3 items need attention")
     await user.should_see("platform.vessel_name")
     await user.should_see('is still the template placeholder "..."')
     user.find(marker="settings-menu").click()

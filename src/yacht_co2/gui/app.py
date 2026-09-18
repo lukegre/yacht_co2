@@ -131,6 +131,11 @@ class Workbench:
         self.picker: FolderPicker | None = None
 
         self._build_header()
+        self._project_warning_banner()
+        # NiceGUI's content column pads/insets everything below the header by
+        # default; strip that so the banner is flush and full-bleed, then
+        # restore the same spacing on our own wrapper below.
+        ui.query(".nicegui-content").classes("p-0 gap-0")
         with ui.column().classes("w-full max-w-5xl mx-auto p-4 gap-4"):
             with ui.column().classes("w-full gap-1"):
                 ui.label("Add campaign data").classes("text-lg font-medium")
@@ -172,52 +177,60 @@ class Workbench:
                 self._zenodo_status()
                 self._settings_menu()
 
-    @ui.refreshable_method
     def _settings_menu(self) -> None:
-        """Show the settings cog, badging it when its project file needs attention."""
-        findings = project_settings_findings()
-        aria_label = "Settings"
-        if findings:
-            aria_label = "Settings — project.yaml needs attention"
+        """Show the settings cog. Project problems are announced by the banner."""
+        (
+            ui.button(icon="settings", color=None, on_click=self._open_settings)
+            .props("flat round aria-label='Settings'")
+            .classes("text-white")
+            .mark("settings-menu")
+            .tooltip("Settings")
+        )
 
-        with ui.element("div").classes("relative"):
-            settings_button = (
-                ui.button(icon="settings", color=None, on_click=self._open_settings)
-                .props(f"flat round aria-label='{aria_label}'")
-                .classes("text-white")
-                .mark("settings-menu")
+    @ui.refreshable_method
+    def _project_warning_banner(self) -> None:
+        """Announce project.yaml problems in one line under the header.
+
+        A banner says what a badge on the cog could not: it is readable without
+        hovering, and it cannot sit on top of the cog's click target.
+        """
+        findings = project_settings_findings()
+        if not findings:
+            return
+
+        summary = f"{len(findings)} item{'s' if len(findings) > 1 else ''} need attention"
+        with (
+            ui.row()
+            .classes(
+                "w-full items-center gap-2 px-6 py-2 cursor-pointer "
+                "bg-amber-100 text-amber-900 border-b border-amber-300 "
+                "text-sm whitespace-nowrap overflow-hidden"
             )
-            if findings:
-                self._settings_warning_tooltip(settings_button, findings)
-                (
-                    ui.icon("warning")
-                    .classes("absolute -top-0.5 -right-0.5 text-amber-300 drop-shadow pointer-events-none")
-                    .props("aria-hidden=true")
-                    .mark("project-settings-warning")
-                )
-            else:
-                settings_button.tooltip("Settings")
+            .props("role=button tabindex=0 aria-label='project.yaml needs attention'")
+            .on("click", self._open_settings)
+            .mark("project-settings-warning")
+        ):
+            ui.icon("warning").classes("text-amber-700 shrink-0")
+            ui.label("project.yaml needs attention").classes("font-medium shrink-0")
+            ui.label(f"— {summary}").classes("truncate opacity-80")
+            ui.label("· fix in Settings → Project").classes("shrink-0 opacity-70")
+            self._settings_warning_tooltip(findings)
 
     @staticmethod
-    def _settings_warning_tooltip(settings_button: ui.button, findings: list[Any]) -> None:
-        """Explain project defaults problems without turning the cog into a wall of text."""
-        with settings_button:
-            with (
-                ui.tooltip()
-                .classes(
-                    "max-w-md rounded-lg border border-amber-300 bg-slate-900 p-3 text-slate-50 shadow-xl"
-                )
-                .mark("project-settings-tooltip")
-            ):
-                with ui.row().classes("items-center gap-2"):
-                    ui.icon("warning").classes("text-amber-300")
-                    ui.label("project.yaml needs attention").classes("font-medium")
-                ui.separator().classes("my-2 bg-slate-700")
-                with ui.column().classes("gap-2"):
-                    for finding in findings:
-                        with ui.column().classes("gap-0"):
-                            ui.label(finding.where).classes("font-mono text-xs text-amber-200")
-                            ui.label(finding.message).classes("text-xs text-slate-200")
+    def _settings_warning_tooltip(findings: list[Any]) -> None:
+        """Spell out the problems on hover, so the banner can stay one line high."""
+        with (
+            ui.tooltip()
+            .classes(
+                "max-w-md rounded-lg border border-amber-300 bg-slate-900 p-3 text-slate-50 shadow-xl"
+            )
+            .mark("project-settings-tooltip")
+        ):
+            with ui.column().classes("gap-2"):
+                for finding in findings:
+                    with ui.column().classes("gap-0"):
+                        ui.label(finding.where).classes("font-mono text-xs text-amber-200")
+                        ui.label(finding.message).classes("text-xs text-slate-200")
 
     @ui.refreshable_method
     def _zenodo_status(self) -> None:
@@ -243,7 +256,7 @@ class Workbench:
                 ui.button("Close", on_click=dialog.close).props("flat")
         # Opening Settings may have created the editable project.yaml from its
         # deliberately incomplete template, so update the header immediately.
-        self._settings_menu.refresh()
+        self._project_warning_banner.refresh()
         dialog.open()
 
     def _build_log(self) -> None:
@@ -325,7 +338,7 @@ class Workbench:
                         # background instead.
                         ui.badge(
                             label,
-                            color="green" if done else "grey",
+                            color="#4579ae" if done else "grey",
                             outline=not done,
                         ).classes("text-xs")
                     (
@@ -403,7 +416,7 @@ class Workbench:
         """Re-read the selected folder and rebuild everything that describes it."""
         self.status = campaign_status(self.folder) if self.folder else None
         self._zenodo_status.refresh()
-        self._settings_menu.refresh()
+        self._project_warning_banner.refresh()
         self._chooser.refresh()
         self._steps.refresh()
 
@@ -745,7 +758,7 @@ class Workbench:
 
     def _done(self, message: str) -> None:
         with ui.row().classes("items-center gap-2"):
-            ui.icon("check_circle").classes("text-green-600")
+            ui.icon("check_circle").classes("text-[#4579ae]")
             ui.label(message).classes("text-sm")
 
     def _blocked(self, message: str) -> None:
@@ -804,6 +817,11 @@ class Workbench:
 
 def workbench() -> None:
     """The one page: choose a campaign folder, then work down the steps."""
+    # Quasar's default primary (#5898d4) recolors every element that reads
+    # --q-primary -- the header, "primary"-colored buttons, text-primary
+    # icons -- in one call. Per-page rather than app.colors() because this
+    # is the app's only page and the simulated browser resets the app.
+    ui.colors(primary="rgb(0, 110, 88)")
     Workbench()
 
 

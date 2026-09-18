@@ -58,6 +58,16 @@ def project_settings_findings() -> list[Finding]:
     except YachtCO2Error as exc:
         return [Finding("error", PROJECT_NAME, str(exc))]
 
+    return project_document_findings(document)
+
+
+def project_document_findings(document: object) -> list[Finding]:
+    """Validate an already-loaded project document, placeholders included.
+
+    Shared by the cog's banner and the Project editor, so a template
+    placeholder the banner warns about is never missing from the editor
+    someone opens to fix it.
+    """
     findings = validate_project_document(document, source=PROJECT_NAME)
     return [
         *findings,
@@ -265,7 +275,7 @@ def settings_panels(
         with ui.tab_panel(project_tab):
             editor = DocumentEditor(
                 config_file(PROJECT_NAME),
-                lambda document: validate_project_document(document, source=PROJECT_NAME),
+                project_document_findings,
                 marker="defaults-project",
                 description=(
                     "Who the vessel is and how its records are credited. Every campaign "

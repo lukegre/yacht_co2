@@ -73,7 +73,7 @@ def findings_panel(findings: list[Finding], *, clean: str = "No problems found."
     """List validation findings worst first, inside the caller's container."""
     if not findings:
         with ui.row().classes("items-center gap-2"):
-            ui.icon("check_circle").classes("text-green-600")
+            ui.icon("check_circle").classes("text-[#4579ae]")
             ui.label(clean).classes("text-sm text-gray-600")
         return
     for finding in sorted(findings, key=lambda item: item.severity != "error"):
