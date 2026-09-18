@@ -116,6 +116,7 @@ async def test_progress_is_collapsed_by_default(user: User, campaigns):
     await user.open("/")
     progress = _one(user, "progress-log")
     assert progress.value is False
+    assert "h-40" in _one(user, "progress-terminal")._classes
 
 
 async def test_choosing_a_campaign_shows_every_step(user: User, campaigns):

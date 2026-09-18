@@ -176,28 +176,48 @@ class Workbench:
     def _settings_menu(self) -> None:
         """Show the settings cog, badging it when its project file needs attention."""
         findings = project_settings_findings()
-        tooltip = "Settings"
+        aria_label = "Settings"
         if findings:
-            details = "; ".join(f"{finding.where}: {finding.message}" for finding in findings)
-            tooltip = f"project.yaml needs attention: {details}"
+            aria_label = "Settings — project.yaml needs attention"
 
         with ui.element("div").classes("relative"):
-            (
+            settings_button = (
                 ui.button(icon="settings", color=None, on_click=self._open_settings)
-                .props("flat round aria-label=Settings")
+                .props(f"flat round aria-label='{aria_label}'")
                 .classes("text-white")
                 .mark("settings-menu")
-                .tooltip(tooltip)
             )
             if findings:
+                self._settings_warning_tooltip(settings_button, findings)
                 (
                     ui.icon("warning")
-                    .classes("absolute -top-0.5 -right-0.5 text-amber-300 drop-shadow cursor-pointer")
-                    .props("aria-label='Project settings need attention'")
+                    .classes("absolute -top-0.5 -right-0.5 text-amber-300 drop-shadow pointer-events-none")
+                    .props("aria-hidden=true")
                     .mark("project-settings-warning")
-                    .tooltip(tooltip)
-                    .on("click", self._open_settings)
                 )
+            else:
+                settings_button.tooltip("Settings")
+
+    @staticmethod
+    def _settings_warning_tooltip(settings_button: ui.button, findings: list[Any]) -> None:
+        """Explain project defaults problems without turning the cog into a wall of text."""
+        with settings_button:
+            with (
+                ui.tooltip()
+                .classes(
+                    "max-w-md rounded-lg border border-amber-300 bg-slate-900 p-3 text-slate-50 shadow-xl"
+                )
+                .mark("project-settings-tooltip")
+            ):
+                with ui.row().classes("items-center gap-2"):
+                    ui.icon("warning").classes("text-amber-300")
+                    ui.label("project.yaml needs attention").classes("font-medium")
+                ui.separator().classes("my-2 bg-slate-700")
+                with ui.column().classes("gap-2"):
+                    for finding in findings:
+                        with ui.column().classes("gap-0"):
+                            ui.label(finding.where).classes("font-mono text-xs text-amber-200")
+                            ui.label(finding.message).classes("text-xs text-slate-200")
 
     @ui.refreshable_method
     def _zenodo_status(self) -> None:
@@ -234,8 +254,8 @@ class Workbench:
                 .mark("progress-log")
             ) as self.log_panel:
                 self.log = ui.log(max_lines=2000).classes(
-                    "w-full h-56 bg-gray-900 text-gray-100 text-xs font-mono"
-                )
+                    "w-full h-40 bg-gray-900 text-gray-100 text-xs font-mono"
+                ).mark("progress-terminal")
 
     def _pump(self) -> None:
         """Copy whatever the running step has logged into the page."""

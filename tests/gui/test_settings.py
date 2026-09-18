@@ -56,9 +56,14 @@ async def test_settings_cog_warns_about_missing_project_information(user: User):
     )
 
     await user.open("/")
-    await user.should_see(marker="project-settings-warning")
+    warning = _one(user, "project-settings-warning")
+    assert "pointer-events-none" in warning._classes
+    assert "bg-slate-900" in _one(user, "project-settings-tooltip")._classes
     await user.should_see("project.yaml needs attention")
-    await user.should_see('platform.vessel_name: is still the template placeholder "..."')
+    await user.should_see("platform.vessel_name")
+    await user.should_see('is still the template placeholder "..."')
+    user.find(marker="settings-menu").click()
+    await user.should_see("Settings")
 
     problems = project_settings_findings()
     assert [(problem.where, problem.message) for problem in problems] == [
