@@ -104,12 +104,39 @@ def test_docker_mode_uses_browser_artifacts(monkeypatch: pytest.MonkeyPatch):
     assert artifacts.use_browser_artifacts()
 
 
-def test_non_docker_mode_keeps_desktop_artifacts_even_behind_renku(
+def test_renku_mode_uses_browser_artifacts_even_without_dockers_own_marker(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    """A RenkuLab session doesn't always leave Docker's marker file behind,
+
+    but it still puts the server and the person looking at the browser on
+    different machines, so xdg-open there would only affect a container
+    nobody is looking at.
+    """
     monkeypatch.setattr(artifacts, "DOCKER_ENV", "/container-marker")
     monkeypatch.setattr(Path, "is_file", lambda path: False)
     monkeypatch.setenv(artifacts.RENKU_BASE_URL_PATH_ENV, "/sessions/example")
+    assert artifacts.use_browser_artifacts()
+
+
+def test_a_missing_opener_binary_uses_browser_artifacts(monkeypatch: pytest.MonkeyPatch):
+    """Neither Docker's marker nor Renku's env var names every headless case,
+
+    so a container lacking xdg-open (or the platform equivalent) falls back
+    to the browser routes too.
+    """
+    monkeypatch.setattr(artifacts, "DOCKER_ENV", "/container-marker")
+    monkeypatch.setattr(Path, "is_file", lambda path: False)
+    monkeypatch.delenv(artifacts.RENKU_BASE_URL_PATH_ENV, raising=False)
+    monkeypatch.setattr(artifacts.shutil, "which", lambda name: None)
+    assert artifacts.use_browser_artifacts()
+
+
+def test_a_present_opener_binary_keeps_desktop_artifacts(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(artifacts, "DOCKER_ENV", "/container-marker")
+    monkeypatch.setattr(Path, "is_file", lambda path: False)
+    monkeypatch.delenv(artifacts.RENKU_BASE_URL_PATH_ENV, raising=False)
+    monkeypatch.setattr(artifacts.shutil, "which", lambda name: f"/usr/bin/{name}")
     assert not artifacts.use_browser_artifacts()
 
 

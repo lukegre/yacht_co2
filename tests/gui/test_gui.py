@@ -209,6 +209,10 @@ async def test_a_finished_campaign_offers_what_it_produced(user: User, finished)
 async def test_what_a_campaign_produced_is_opened_by_the_desktop(user: User, finished, monkeypatch):
     """Not by a second browser tab: a native window has none to open."""
     monkeypatch.setattr(artifacts, "is_docker", lambda: False)
+    monkeypatch.delenv(app.RENKU_BASE_URL_PATH_ENV, raising=False)
+    # Desktop mode also requires an opener binary; stub one in so the test
+    # does not depend on whether this machine actually has xdg-open.
+    monkeypatch.setattr(artifacts.shutil, "which", lambda name: f"/usr/bin/{name}")
     opened: list[tuple[str, str]] = []
     monkeypatch.setattr(
         components, "open_file", lambda path: opened.append(("open", Path(path).name))

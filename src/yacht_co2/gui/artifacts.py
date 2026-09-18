@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import shutil
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from urllib.parse import quote
@@ -29,8 +31,19 @@ def is_docker() -> bool:
 
 
 def use_browser_artifacts() -> bool:
-    """Use HTTP artifact actions inside Docker, where no host desktop exists."""
-    return is_docker()
+    """Use HTTP artifact actions wherever there is no desktop to hand a file to.
+
+    Docker's container marker and Renku's reverse-proxy environment variable
+    both mean the server and the person looking at the browser are different
+    machines, so ``xdg-open`` (or its platform equivalent) would only affect a
+    container nobody is looking at. A container can lack a desktop without
+    leaving either mark behind, though, so this also checks for the opener
+    binary itself rather than trying to name every such environment.
+    """
+    if is_docker() or os.environ.get(RENKU_BASE_URL_PATH_ENV):
+        return True
+    opener = {"darwin": "open", "win32": "explorer"}.get(sys.platform, "xdg-open")
+    return shutil.which(opener) is None
 
 
 def resolve_download(data_root: Path, campaign: str, artifact_key: str) -> tuple[Path, str]:
