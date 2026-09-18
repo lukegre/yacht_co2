@@ -42,7 +42,7 @@ def campaigns(tmp_path):
 
 async def test_the_page_lists_the_campaign_folders_it_finds(user: User, campaigns):
     await user.open("/")
-    await user.should_see("Yacht CO2")
+    await user.should_see("From sailboat CO₂ logs to a citable record")
     await user.should_see("Open a published record")
     await user.should_see("Import raw logs")
     await user.should_see("Campaign folders")

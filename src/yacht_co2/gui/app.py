@@ -48,6 +48,9 @@ from .settings import project_settings_findings, settings_panels
 #: The kinds of notification the page raises, as Quasar names them.
 Notification = Literal["positive", "negative", "warning", "info"]
 
+#: Packaged alongside the module so it ships with the app regardless of cwd.
+LOGO_PATH = Path(__file__).parent / "assets" / "yacht_logo.png"
+
 STEPS = (
     "Archive the raw logs",
     "Build the processing manifest",
@@ -167,15 +170,23 @@ class Workbench:
     # -- chrome ---------------------------------------------------------
 
     def _build_header(self) -> None:
-        with ui.header().classes("items-center justify-between px-6 py-3 shadow-md"):
-            with ui.column().classes("gap-0.5"):
-                ui.label("Yacht CO2").classes("text-xl font-semibold tracking-tight")
-                ui.label("underway CO2, from raw logs to a published record").classes(
-                    "text-sm opacity-90"
+        # Two columns of equal height (items-stretch overrides NiceGUI's
+        # default flex-start, which would otherwise let them size to their
+        # own content): a fixed-width logo plate, then everything else.
+        # Padding lives on the second column so the first is free for the
+        # logo to fill.
+        with ui.header().classes("items-stretch p-0 gap-0 shadow-md"):
+            with ui.element("div").classes(
+                "shrink-0 bg-white flex items-center justify-center"
+            ).style("width: 251.07px"):
+                ui.image(LOGO_PATH).classes("h-full w-full").props("fit=contain")
+            with ui.row().classes("grow items-center px-6 py-3"):
+                ui.label("From sailboat CO₂ logs to a citable record").classes(
+                    "grow text-left text-lg opacity-90"
                 )
-            with ui.row().classes("items-center gap-2"):
-                self._zenodo_status()
-                self._settings_menu()
+                with ui.row().classes("items-center gap-2"):
+                    self._zenodo_status()
+                    self._settings_menu()
 
     def _settings_menu(self) -> None:
         """Show the settings cog. Project problems are announced by the banner."""
@@ -262,7 +273,7 @@ class Workbench:
     def _build_log(self) -> None:
         with ui.footer().classes("bg-gray-900 text-gray-100 p-0"):
             with (
-                ui.expansion("Progress", icon="terminal", value=False)
+                ui.expansion("Progress logs", icon="terminal", value=False)
                 .classes("w-full text-gray-100")
                 .mark("progress-log")
             ) as self.log_panel:
