@@ -180,9 +180,9 @@ class Workbench:
                 "shrink-0 bg-white flex items-center justify-center"
             ).style("width: 251.07px"):
                 ui.image(LOGO_PATH).classes("h-full w-full").props("fit=contain")
-            with ui.row().classes("grow items-center px-6 py-3"):
+            with ui.row().classes("grow items-center p-4"):
                 ui.label("From sailboat CO₂ logs to a citable record").classes(
-                    "grow text-left pl-4 opacity-90"
+                    "grow text-left p-0 opacity-90"
                 ).style("font-family: Inter, sans-serif; font-size: 16px; font-weight: 400")
                 with ui.row().classes("items-center gap-2"):
                     self._zenodo_status()
