@@ -17,18 +17,23 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from loguru import logger
-from nicegui import run, ui
+from nicegui import app, run, ui
+from starlette.exceptions import HTTPException
+from starlette.responses import FileResponse
 
 from ..manifest import MANIFEST_NAME, build_manifest
+from ..raw_import import process_raw_logs_directly
 from ..userconfig import read_settings, read_token, write_settings
 from ..workflow import CampaignStatus, campaign_status, find_campaigns, run_campaign
 from ..zenodo import CONFIG_NAME as ZENODO_CONFIG_NAME
 from ..zenodo import upload_raw_folder
+from .artifacts import RENKU_BASE_URL_PATH_ENV, download_button, is_renku, resolve_download
 from .components import show_artifact
 from .folders import FolderPicker
 from .jobs import RUNNER
 from .manifestform import ManifestForm
 from .opening import reveal
+from .raw_import import RawImportPanel
 from .records import RecordPanel
 from .settings import settings_panels
 
@@ -93,6 +98,7 @@ class Workbench:
     """One browser tab, showing one campaign folder at a time."""
 
     def __init__(self) -> None:
+        self.zenodo_tokens: dict[str, str] = {}
         settings = read_settings()
         self.data_root = Path(settings.get("data_root") or Path.home()).expanduser()
         self.folder: Path | None = None
@@ -105,12 +111,21 @@ class Workbench:
 
         self._build_header()
         with ui.column().classes("w-full max-w-5xl mx-auto p-4 gap-4"):
-            self._chooser()
             RecordPanel(
                 data_root=lambda: self.data_root,
                 start=self._start_later,
                 on_imported=self._select,
             )
+            with ui.row().classes("w-full gap-4 items-stretch flex-wrap"):
+                with ui.column().classes("grow min-w-80"):
+                    self._chooser()
+                with ui.column().classes("grow min-w-80"):
+                    RawImportPanel(
+                        data_root=lambda: self.data_root,
+                        start=self._start_later,
+                        on_imported=self._select,
+                        process_directly=self._process_raw_logs_directly,
+                    )
             self._steps()
         self._build_log()
         ui.timer(0.3, self._pump)
@@ -135,6 +150,7 @@ class Workbench:
                     data_root=self.data_root,
                     on_data_root_changed=self._apply_root,
                     on_saved=self.refresh,
+                    session_tokens=self.zenodo_tokens,
                 )
                 ui.button("Close", on_click=dialog.close).props("flat")
         dialog.open()
@@ -259,6 +275,14 @@ class Workbench:
         self._chooser.refresh()
         self._steps.refresh()
 
+    def _process_raw_logs_directly(self, folder: Path, name: str, date: str) -> None:
+        """Run the imported local logs without first creating a Zenodo archive."""
+        self._start_later(
+            "Processing raw logs directly",
+            lambda: process_raw_logs_directly(folder, name, date),
+            then=lambda _result: self._select(folder),
+        )
+
     # -- running a step -------------------------------------------------
 
     async def _start(
@@ -374,8 +398,12 @@ class Workbench:
         token_note = ui.label().classes("text-sm")
 
         def upload(dry_run: bool) -> None:
-            if not read_token(sandbox=bool(sandbox.value)) and not dry_run:
-                token_note.set_text("No Zenodo token stored yet. Add one under Settings.")
+            variable = "ZENODO_SANDBOX_ACCESS_TOKEN" if sandbox.value else "ZENODO_ACCESS_TOKEN"
+            session_token = self.zenodo_tokens.get(variable)
+            if not read_token(sandbox=bool(sandbox.value), session_token=session_token) and not dry_run:
+                token_note.set_text(
+                    "Zenodo uploads are unavailable. Add a Renku secret or paste a token under Settings."
+                )
                 token_note.classes(replace="text-sm text-red-600")
                 return
             if not (name.value or "").strip() or not (date.value or "").strip():
@@ -392,6 +420,7 @@ class Workbench:
                     publish=not dry_run,
                     dry_run=dry_run,
                     sandbox=bool(sandbox.value),
+                    token=session_token,
                 ),
                 outcome=upload_outcome,
             )
@@ -546,21 +575,24 @@ class Workbench:
         same.
         """
         built = [
-            ("Interactive page", status.site, "public"),
-            ("Dataset (NetCDF)", status.track, "dataset"),
-            ("Run report", status.report, "description"),
+            ("site", "Interactive page", status.site, "public"),
+            ("track", "Dataset (NetCDF)", status.track, "dataset"),
+            ("report", "Run report", status.report, "description"),
         ]
-        built = [entry for entry in built if entry[1] is not None]
+        built = [entry for entry in built if entry[2] is not None]
         if not built:
             return
         with ui.row().classes("gap-2 flex-wrap"):
-            for label, path, icon in built:
+            for key, label, path, icon in built:
                 assert path is not None
-                ui.button(
-                    label,
-                    icon=icon,
-                    on_click=lambda path=path: show_artifact(path),
-                ).props("flat dense")
+                if is_renku():
+                    download_button(label, status.folder.name, key, marker=f"download-{key}")
+                else:
+                    ui.button(
+                        label,
+                        icon=icon,
+                        on_click=lambda path=path: show_artifact(path),
+                    ).props("flat dense")
 
 
 def workbench() -> None:
@@ -582,9 +614,16 @@ def register_pages() -> None:
 #: columns the workbench lays its steps out in.
 WINDOW_SIZE = (1180, 860)
 
-#: Renku publishes sessions below a generated URL prefix and exposes it to the
-#: container through this environment variable.
-RENKU_BASE_URL_PATH_ENV = "RENKU_BASE_URL_PATH"
+@app.get("/artifacts/{campaign}/{artifact_key}")
+def artifact_download(campaign: str, artifact_key: str) -> FileResponse:
+    """Download one public campaign artifact, never an arbitrary server file."""
+    settings = read_settings()
+    data_root = Path(settings.get("data_root") or Path.home())
+    try:
+        path, content_type = resolve_download(data_root, campaign, artifact_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Campaign artifact not found") from exc
+    return FileResponse(path, media_type=content_type, filename=path.name)
 
 
 def launch(

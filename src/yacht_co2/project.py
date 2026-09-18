@@ -18,11 +18,11 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 from loguru import logger
 
 from .errors import ManifestError, YachtCO2Error
-from .userconfig import config_dir, user_project_config
+from .userconfig import TOKEN_VARIABLES, config_dir, shared_project_config, user_project_config
 
 PROJECT_CONFIG_NAME = "project.yaml"
 PROJECT_CONFIG_ENV = "YACHT_CO2_PROJECT_CONFIG"
@@ -75,14 +75,21 @@ def config_directories(start: str | Path | None = None) -> list[Path]:
 
 
 def load_environment(directories: list[Path]) -> None:
-    """Add ``.env`` values to the environment without overriding real exports.
+    """Add non-secret ``.env`` values without overriding real exports.
 
-    The user's own configuration directory is read last: ``override=False``
-    means the first value seen wins, so a token kept there is the fallback for
-    someone with no shell to export one in, never an override of the project's.
+    Zenodo tokens are intentionally left to :func:`userconfig.read_token`,
+    which applies the GUI/environment/Renku/local-secret precedence without a
+    local fallback first being promoted into the process environment.
     """
+    token_variables = frozenset(TOKEN_VARIABLES.values())
     for directory in (*directories, Path.cwd(), config_dir()):
-        load_dotenv(directory / ".env", override=False)
+        # Credentials have a deliberately different precedence (GUI session,
+        # inherited environment, Renku secret, local .env).  Do not let a
+        # generic project-configuration load turn a local fallback into an
+        # apparent inherited environment value before ``read_token`` sees it.
+        for key, value in dotenv_values(directory / ".env").items():
+            if key and value is not None and key not in token_variables:
+                os.environ.setdefault(key, value)
 
 
 def configured_config_path() -> Path | None:
@@ -115,11 +122,13 @@ def config_paths(start: str | Path | None = None) -> list[Path]:
     """
     directories = config_directories(start)
     load_environment(directories)
+    shared = shared_project_config()
     personal = user_project_config()
     configured = configured_config_path()
     found = [directory / PROJECT_CONFIG_NAME for directory in directories]
     paths = [
-        *([personal] if personal else []),
+        *([shared] if shared else []),
+        *([personal] if personal and personal != shared else []),
         *([configured] if configured else []),
         *found,
     ]

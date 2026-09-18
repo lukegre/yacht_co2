@@ -11,7 +11,7 @@ document a run reads before it reads any data:
     vessel, instrument and archival identity, shared by every campaign.
 ``manifest.yaml``
     the processing template a new campaign's manifest starts from, the same
-    document as the packaged ``templates/defaults.yaml``.
+    document as the packaged ``templates/manifest.yaml``.
 
 The Zenodo token lives here too, in a ``.env`` readable only by its owner,
 because both YAML files above are meant to be shared and one of them is
@@ -37,6 +37,14 @@ from loguru import logger
 from .errors import YachtCO2Error
 
 CONFIG_DIR_ENV = "YACHT_CO2_CONFIG_DIR"
+"""Location of shared, potentially read-only installation defaults."""
+
+USER_CONFIG_DIR_ENV = "YACHT_CO2_USER_CONFIG_DIR"
+"""Location for writable per-user settings, credentials, and logs."""
+
+RENKU_SHARED_CONFIG_DIR = Path("/home/renku/.config/yacht_co2")
+RENKU_USER_CONFIG_DIR = Path("/home/renku/work/.config/yacht_co2")
+SECRETS_DIRECTORY = Path("/secrets")
 APP_DIRECTORY = "yacht_co2"
 PROJECT_NAME = "project.yaml"
 MANIFEST_DEFAULTS_NAME = "manifest.yaml"
@@ -79,13 +87,31 @@ def resolve_config_dir(
     return (Path(base).expanduser() if base else home / ".config") / APP_DIRECTORY
 
 
-def config_dir() -> Path:
-    """Return the directory holding this user's defaults.
+def shared_config_dir() -> Path:
+    """Return installation defaults, which may be a read-only connector.
 
-    ``YACHT_CO2_CONFIG_DIR`` overrides the platform location outright, which is
-    how a test -- or a shared installation -- keeps its configuration to itself.
+    ``YACHT_CO2_CONFIG_DIR`` remains the explicit shared-defaults override.
+    Renku mounts its published connector at this location.  Callers must never
+    create or edit files here; :func:`config_dir` is the writable counterpart.
     """
     return resolve_config_dir(os.name, os.environ, Path.home(), sys_platform=sys.platform)
+
+
+def config_dir() -> Path:
+    """Return the writable per-user configuration directory.
+
+    ``YACHT_CO2_USER_CONFIG_DIR`` separates writable state from shared
+    installation defaults.  The historic ``YACHT_CO2_CONFIG_DIR`` continues
+    to work as a single-directory override unless the writable variable is
+    also supplied.  The Renku image supplies the latter; the fallback protects
+    an interactive Renku session whose connector is mounted read-only.
+    """
+    override = os.environ.get(USER_CONFIG_DIR_ENV, "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    if os.environ.get("RENKU_BASE_URL_PATH") and shared_config_dir() == RENKU_SHARED_CONFIG_DIR:
+        return RENKU_USER_CONFIG_DIR
+    return shared_config_dir()
 
 
 def config_file(name: str) -> Path:
@@ -108,9 +134,21 @@ def user_project_config() -> Path | None:
     return existing_config_file(PROJECT_NAME)
 
 
+def shared_project_config() -> Path | None:
+    """Return the installation's read-only ``project.yaml``, if present."""
+    path = shared_config_dir() / PROJECT_NAME
+    return path if path.is_file() else None
+
+
 def user_manifest_defaults() -> Path | None:
     """Return this user's manifest template, if they have written one."""
     return existing_config_file(MANIFEST_DEFAULTS_NAME)
+
+
+def shared_manifest_defaults() -> Path | None:
+    """Return an installation manifest template without ever writing beside it."""
+    path = shared_config_dir() / MANIFEST_DEFAULTS_NAME
+    return path if path.is_file() else None
 
 
 def ensure_config_dir() -> Path:
@@ -135,8 +173,13 @@ def seed_config_dir() -> dict[str, Path]:
 
     directory = ensure_config_dir()
     sources = {
-        PROJECT_NAME: packaged_project_defaults(),
-        MANIFEST_DEFAULTS_NAME: packaged_defaults(),
+        # A deployment connector is the installation's authoritative starting
+        # point.  Copy it into writable state on first launch rather than
+        # silently replacing its vessel/processing choices with package
+        # examples.  It remains safe when shared and writable directories are
+        # the same: an existing destination is skipped below.
+        PROJECT_NAME: shared_project_config() or packaged_project_defaults(),
+        MANIFEST_DEFAULTS_NAME: shared_manifest_defaults() or packaged_defaults(),
     }
     created: dict[str, Path] = {}
     for name, source in sources.items():
@@ -181,29 +224,76 @@ def write_settings(settings: dict[str, Any]) -> Path:
     return path
 
 
+def _read_env_file(path: Path) -> dict[str, str]:
+    """Read simple ``KEY=value`` entries without executing untrusted content."""
+    secrets: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        logger.warning("Ignoring unreadable secrets file {}: {}", path, exc)
+        return {}
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key in TOKEN_VARIABLES.values():
+            secrets[key] = value.strip().strip("'\"")
+    return secrets
+
+
 def read_secrets() -> dict[str, str]:
     """Parse this user's ``.env`` into a mapping, ignoring anything malformed."""
     path = existing_config_file(SECRETS_NAME)
     if path is None:
         return {}
-    secrets: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        secrets[key.strip()] = value.strip().strip("'\"")
-    return secrets
+    return _read_env_file(path)
 
 
-def read_token(*, sandbox: bool = False) -> str:
-    """Return the Zenodo token for one deployment, environment first.
+def read_renku_secrets(directory: Path = SECRETS_DIRECTORY) -> dict[str, str]:
+    """Read approved Zenodo entries from ``/secrets/*.env`` without sourcing.
 
-    An exported token wins, matching ``load_dotenv(override=False)`` elsewhere:
-    the stored one is a default for a user who has no shell to export it in.
+    A Renku secret is a mounted file, not a shell script.  Only direct files
+    with the documented ``.env`` suffix are considered, and only Zenodo token
+    keys are returned.  Later filenames do not override an earlier token.
+    """
+    if not directory.is_dir():
+        return {}
+    values: dict[str, str] = {}
+    try:
+        files = sorted(path for path in directory.glob("*.env") if path.is_file())
+    except OSError as exc:
+        logger.warning("Could not inspect Renku secrets directory {}: {}", directory, exc)
+        return {}
+    for path in files:
+        for key, value in _read_env_file(path).items():
+            values.setdefault(key, value)
+    return values
+
+
+def read_token(
+    *,
+    sandbox: bool = False,
+    session_token: str | None = None,
+    environment_token: str | None = None,
+) -> str:
+    """Resolve a Zenodo credential for one deployment.
+
+    Precedence is a token supplied by the current GUI session, an inherited
+    environment variable, a mounted Renku ``/secrets/*.env`` file, then this
+    user's writable configuration ``.env``.  Mounted files are parsed as data,
+    never executed or passed to a shell.
     """
     variable = TOKEN_VARIABLES[bool(sandbox)]
-    return (os.environ.get(variable) or read_secrets().get(variable) or "").strip()
+    inherited = os.environ.get(variable) if environment_token is None else environment_token
+    return (
+        session_token
+        or inherited
+        or read_renku_secrets().get(variable)
+        or read_secrets().get(variable)
+        or ""
+    ).strip()
 
 
 def write_token(token: str, *, sandbox: bool = False) -> Path:

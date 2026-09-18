@@ -35,7 +35,11 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/yacht_co2/.venv/bin:$PATH" \
-    YACHT_CO2_CONFIG_DIR=/home/renku/.config/yacht_co2
+    YACHT_CO2_CONFIG_DIR=/home/renku/.config/yacht_co2 \
+    YACHT_CO2_USER_CONFIG_DIR=/home/renku/work/.config/yacht_co2 \
+    YACHT_CO2_DATA_ROOT=/home/renku/work \
+    YACHT_CO2_HOST=0.0.0.0 \
+    YACHT_CO2_PORT=8080
 
 COPY --from=builder /opt/yacht_co2 /opt/yacht_co2
 
@@ -48,5 +52,9 @@ WORKDIR /home/renku/work
 
 EXPOSE 8080
 
+# Python's standard library keeps this check dependency-free in the slim image.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=6 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/', timeout=2)"
+
 # NiceGUI automatically uses RENKU_BASE_URL_PATH when Renku injects it.
-CMD ["yacht-co2", "gui", "--data-root", "/home/renku/work", "--host", "0.0.0.0", "--port", "8080", "--no-show"]
+CMD ["python", "-m", "yacht_co2.container"]

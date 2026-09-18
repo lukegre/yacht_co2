@@ -15,22 +15,20 @@ from pathlib import Path
 
 from nicegui import ui
 
-from ..errors import YachtCO2Error
 from ..manifest import packaged_defaults
 from ..userconfig import (
     MANIFEST_DEFAULTS_NAME,
     PROJECT_NAME,
-    SECRETS_NAME,
     SETTINGS_NAME,
     TOKEN_VARIABLES,
     config_dir,
     config_file,
     packaged_project_defaults,
+    read_renku_secrets,
     read_secrets,
     read_settings,
     seed_config_dir,
     write_settings,
-    write_token,
 )
 from ..validation import validate_manifest_document, validate_project_document
 from .components import DocumentEditor
@@ -88,15 +86,15 @@ class GuiDefaultsPanel:
 
 
 class TokenPanel:
-    """Store one Zenodo token per deployment, out of sight and out of the repo."""
+    """Keep a Zenodo token in this browser session, out of the repository."""
 
-    def __init__(self) -> None:
+    def __init__(self, session_tokens: dict[str, str]) -> None:
+        self.session_tokens = session_tokens
         with ui.column().classes("w-full gap-3"):
             ui.label(
-                "The token is written to a private file beside these defaults, readable "
-                "only by you. It is never written into a YAML file, an upload, or a log."
+                "A pasted token is held only for this browser session. It is never written "
+                "into a YAML file, an upload, a log, or the read-only Renku defaults."
             ).classes("text-sm text-gray-600")
-            ui.label(str(config_file(SECRETS_NAME))).classes("text-xs text-gray-500 break-all")
             self.inputs: dict[bool, ui.input] = {}
             self.states: dict[bool, ui.label] = {}
             for sandbox, heading in ((False, "Zenodo"), (True, "Zenodo Sandbox")):
@@ -115,11 +113,11 @@ class TokenPanel:
                             .classes("grow")
                         )
                         ui.button(
-                            "Save",
+                            "Use this session",
                             on_click=lambda sandbox=sandbox: self._save(sandbox),
                         ).props("unelevated dense")
                         ui.button(
-                            "Forget",
+                            "Forget session token",
                             on_click=lambda sandbox=sandbox: self._forget(sandbox),
                         ).props("flat dense")
             ui.label(TOKEN_HELP).classes("text-xs text-gray-500")
@@ -127,11 +125,19 @@ class TokenPanel:
 
     def _refresh(self) -> None:
         """Say where each token is coming from, without ever showing it."""
+        session = self.session_tokens
         stored = read_secrets()
+        renku = read_renku_secrets()
         for sandbox, label in self.states.items():
             variable = TOKEN_VARIABLES[sandbox]
-            if os.environ.get(variable) and not stored.get(variable):
+            if session.get(variable):
+                label.set_text("Set for this browser session.")
+                label.classes(replace="text-xs text-green-700")
+            elif os.environ.get(variable):
                 label.set_text(f"Set in the environment as {variable}; that one is used.")
+                label.classes(replace="text-xs text-gray-600")
+            elif renku.get(variable):
+                label.set_text("Set by a Renku secret; that one is used.")
                 label.classes(replace="text-xs text-gray-600")
             elif stored.get(variable):
                 label.set_text("Stored. Paste a new one to replace it.")
@@ -145,20 +151,19 @@ class TokenPanel:
         if not token.strip():
             ui.notify("Paste a token first.", type="warning")
             return
-        try:
-            write_token(token, sandbox=sandbox)
-        except YachtCO2Error as exc:
-            ui.notify(str(exc), type="negative")
+        if any(character in token for character in "\r\n"):
+            ui.notify("A Zenodo token cannot contain a line break.", type="negative")
             return
+        self.session_tokens[TOKEN_VARIABLES[sandbox]] = token.strip()
         self.inputs[sandbox].set_value("")
         self._refresh()
-        ui.notify("Token stored.", type="positive")
+        ui.notify("Token set for this session.", type="positive")
 
     def _forget(self, sandbox: bool) -> None:
-        write_token("", sandbox=sandbox)
+        self.session_tokens.pop(TOKEN_VARIABLES[sandbox], None)
         self.inputs[sandbox].set_value("")
         self._refresh()
-        ui.notify("Token removed.", type="info")
+        ui.notify("Session token removed.", type="info")
 
 
 def settings_panels(
@@ -166,6 +171,7 @@ def settings_panels(
     data_root: Path | None = None,
     on_data_root_changed: Callable[[Path], None] | None = None,
     on_saved: Callable[[], None] | None = None,
+    session_tokens: dict[str, str] | None = None,
 ) -> None:
     """Build the user-level settings panels inside the caller's container."""
     created = seed_config_dir()
@@ -231,4 +237,4 @@ def settings_panels(
                 on_click=lambda: template.restore(packaged_defaults()),
             ).props("flat dense")
         with ui.tab_panel(token_tab):
-            TokenPanel()
+            TokenPanel(session_tokens if session_tokens is not None else {})

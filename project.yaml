@@ -32,6 +32,10 @@ zenodo:
   # Ordered list; each entry is exactly "last name, first name, ORCID". A data
   # folder that sets its own list replaces this one completely.
   creators:
+  - Heer, Oliver, data-collection
+  - Jaccard, Samuel, 0000-0002-5793-0896
+  - Froelicher, Thomas, 0000-0003-2348-7854
+  - Gruber, Nicolas, 0000-0002-2085-2310
   - Gregor, Luke, 0000-0001-6071-1857
   community: vendee-globe-co2
   resource_type: dataset
@@ -42,7 +46,7 @@ zenodo:
 
     <p>Files in this repo:</p>
 
-    <pre><code>    *.log              raw log files directly from the ferrybox
+    <pre><code>*.log              raw log files directly from the ferrybox
     manifest.yaml      config of how data was processed (QC, columns, phases, etc.)
     &lt;campaign&gt;.json    report on the full campaign with: averages, sampling phase counts
     &lt;campaign&gt;.html    an interactive cruise viewer

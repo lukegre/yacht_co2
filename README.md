@@ -173,26 +173,80 @@ download adds files and changes nothing the folder already says about itself.
 ### Shared defaults
 
 The settings cog edits the GUI preference and two documents every campaign
-inherits, kept in your own configuration directory rather than in a checkout:
+inherits, kept in a writable user configuration directory rather than in a
+checkout:
 
 | File | Holds |
 | ---- | ----- |
 | `gui.yaml` | the campaign folder the workbench opens on each launch |
 | `project.yaml` | vessel and instrument identity, and the Zenodo metadata every record is built from |
 | `manifest.yaml` | the processing template `build-manifest` starts a new campaign from |
-| `.env` | your Zenodo token, written readable only by you |
+| `.env` | an optional local Zenodo-token fallback, readable only by you |
 
 The directory is `~/Library/Application Support/yacht_co2` on macOS,
 `~/.config/yacht_co2` on Linux (`$XDG_CONFIG_HOME` is honoured), and
-`%APPDATA%\yacht_co2` on Windows; `YACHT_CO2_CONFIG_DIR` overrides all three. Both
-YAML files are seeded from the packaged templates on first launch and never
-overwritten afterwards.
+`%APPDATA%\yacht_co2` on Windows. `YACHT_CO2_CONFIG_DIR` selects shared
+installation defaults; in a normal local installation it is also the writable
+directory for backwards compatibility. Set `YACHT_CO2_USER_CONFIG_DIR` to
+separate writable settings, local credentials, and desktop logs from those
+shared defaults. Both YAML files are seeded only in the writable directory on
+first launch and never overwritten afterwards.
 
-This copy has the **lowest** precedence of any project configuration: a
+On RenkuLab, mount the **yacht-co2 defaults: Oliver Heer (Yoroshiku)** data
+connector (DOI `10.5281/zenodo.22825109`) read-only at
+`/home/renku/.config/yacht_co2`. It supplies `project.yaml` and
+`manifest.yaml`. The image writes user settings and logs under
+`/home/renku/work/.config/yacht_co2` (`YACHT_CO2_USER_CONFIG_DIR`), never into
+the connector. Resolution is shared connector defaults, writable user defaults,
+an optional `YACHT_CO2_PROJECT_CONFIG`, then repository/project and campaign
+configuration; the later source refines the earlier one.
+
+The writable copy ranks above the shared connector but below project
+configuration: a
 `project.yaml` inside a repository still refines it key by key and
 `YACHT_CO2_PROJECT_CONFIG` still outranks it, so writing one changes nothing
-about what an existing checkout already does. The token is read only when the
-environment does not already supply one.
+about what an existing checkout already does.
+
+### Local Docker smoke check
+
+With Docker Desktop or Docker Engine running, this one command builds the
+image, starts it with temporary data, shared-defaults, and writable user-config
+mounts, waits for the GUI, and removes the uniquely named image, container, and
+temporary files afterwards:
+
+```console
+uv run python packaging/docker_smoke.py
+```
+
+It uses an inert `ZENODO_ACCESS_TOKEN` value only to verify environment-token
+resolution; it does not contact Zenodo. The check confirms that the page is
+reachable on a temporary local port, the read-only mounted `project.yaml` is
+found, the writable configuration mount is seeded and receives `desktop.log`,
+and the GUI records its mounted data-root path. The image also has an
+inexpensive HTTP healthcheck on port 8080.
+
+Dropbox volumes, an actual RenkuLab `/secrets` injection, and a live Zenodo
+upload remain manual-only integrations: they need a contributor's account,
+secret, or external service and are intentionally never exercised by this
+credential-free check.
+
+### Zenodo credentials on RenkuLab
+
+Create a RenkuLab secret containing one or both token entries and mount it at
+`/secrets`, for example `/secrets/zenodo.env`:
+
+```dotenv
+ZENODO_ACCESS_TOKEN=your-production-token
+ZENODO_SANDBOX_ACCESS_TOKEN=your-sandbox-token
+```
+
+Only direct `/secrets/*.env` files are read as `KEY=value` data; they are never
+shell-sourced, and all other keys are ignored. For an upload, the selected
+production or sandbox token resolves in this order: token pasted into the GUI
+for the current browser session, inherited environment, `/secrets/*.env`, then
+the writable configuration directory’s `.env`. The GUI token disappears when
+the session ends. If none is available, uploads explain that a Renku secret or
+a session token is required.
 
 ## Manifest
 
@@ -205,7 +259,7 @@ campaign (or explicit title), `campaign.date` from its campaign date, and
 `campaign.id` from its slug or the data-folder name. The remaining values come
 from your own `manifest.yaml` template if you have one (see
 [Without a terminal](#without-a-terminal)), otherwise from the one that ships
-with the package, `src/yacht_co2/templates/defaults.yaml`; `--defaults` points
+with the package, `src/yacht_co2/templates/manifest.yaml`; `--defaults` points
 at another file:
 
 ```console

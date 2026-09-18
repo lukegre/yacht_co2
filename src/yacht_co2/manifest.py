@@ -14,24 +14,25 @@ from loguru import logger
 
 from .errors import ManifestError
 from .project import read_yaml
-from .userconfig import user_manifest_defaults
+from .userconfig import shared_manifest_defaults, user_manifest_defaults
 from .validation import Finding, errors, validate_manifest_document
 from .zenodo import CONFIG_NAME as ZENODO_CONFIG_NAME
 
 MANIFEST_NAME = "manifest.yaml"
-DEFAULTS_NAME = "defaults.yaml"
+DEFAULTS_NAME = "manifest.yaml"
 TEMPLATES_DIRECTORY = "templates"
 
 
 def default_template() -> Path:
     """Return the template a new manifest starts from.
 
-    The user's own ``manifest.yaml`` is preferred over the packaged one so that
+    The user's own ``manifest.yaml`` is preferred over shared installation and
+    packaged templates so that
     a fleet's settled processing choices -- its phase codes, its QC ranges --
     are the starting point for every campaign, not something re-entered per
     folder. Without one the packaged template applies unchanged.
     """
-    return user_manifest_defaults() or packaged_defaults()
+    return user_manifest_defaults() or shared_manifest_defaults() or packaged_defaults()
 
 
 def packaged_defaults() -> Path:
@@ -170,7 +171,7 @@ def build_manifest(
     """Build a processing manifest from a folder's ``zenodo.yaml``.
 
     The generated manifest inherits processing values from the user's own
-    manifest template, or from the packaged ``templates/defaults.yaml`` when
+    manifest template, or from the packaged ``templates/manifest.yaml`` when
     they have none. The campaign ID follows Zenodo's slug rule: an
     explicit slug wins, otherwise the data-folder name is used. A Zenodo
     campaign is preferred as the concise name; an explicit title is accepted

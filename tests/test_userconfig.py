@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 import yaml
 
@@ -13,11 +15,14 @@ from yacht_co2.userconfig import (
     MANIFEST_DEFAULTS_NAME,
     PROJECT_NAME,
     SECRETS_NAME,
+    USER_CONFIG_DIR_ENV,
     config_dir,
     config_file,
+    read_renku_secrets,
     read_token,
     resolve_config_dir,
     seed_config_dir,
+    shared_config_dir,
     write_token,
 )
 
@@ -55,6 +60,43 @@ def test_the_environment_overrides_the_platform_location(tmp_path):
     assert config_dir() == elsewhere.parent.resolve() / "user-config"
 
 
+def test_shared_and_writable_configuration_can_be_separate(tmp_path, monkeypatch):
+    shared = tmp_path / "connector"
+    writable = tmp_path / "user"
+    monkeypatch.setenv(CONFIG_DIR_ENV, str(shared))
+    monkeypatch.setenv(USER_CONFIG_DIR_ENV, str(writable))
+    assert shared_config_dir() == shared.resolve()
+    assert config_dir() == writable.resolve()
+    seed_config_dir()
+    assert not shared.exists()
+    assert (writable / PROJECT_NAME).is_file()
+
+
+def test_seeding_copies_connector_defaults_into_writable_configuration(tmp_path, monkeypatch):
+    shared = tmp_path / "connector"
+    writable = tmp_path / "user"
+    shared.mkdir()
+    (shared / PROJECT_NAME).write_text(
+        "platform: {vessel_name: Connector vessel}\n", encoding="utf-8"
+    )
+    (shared / MANIFEST_DEFAULTS_NAME).write_text(
+        "campaign: {id: connector, name: Connector}\ninputs: {logs: ./connector.log}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(CONFIG_DIR_ENV, str(shared))
+    monkeypatch.setenv(USER_CONFIG_DIR_ENV, str(writable))
+
+    created = seed_config_dir()
+
+    assert set(created) == {PROJECT_NAME, MANIFEST_DEFAULTS_NAME}
+    assert (writable / PROJECT_NAME).read_text(encoding="utf-8") == (
+        shared / PROJECT_NAME
+    ).read_text(encoding="utf-8")
+    assert (writable / MANIFEST_DEFAULTS_NAME).read_text(encoding="utf-8") == (
+        shared / MANIFEST_DEFAULTS_NAME
+    ).read_text(encoding="utf-8")
+
+
 def test_seeding_writes_both_templates_once(tmp_path):
     created = seed_config_dir()
     assert set(created) == {PROJECT_NAME, MANIFEST_DEFAULTS_NAME}
@@ -81,6 +123,25 @@ def test_a_user_project_config_ranks_below_the_repository(tmp_path):
 
     resolved = config_paths(repository)
     assert resolved == [config_file(PROJECT_NAME), repository / PROJECT_NAME]
+
+
+def test_shared_defaults_rank_below_writable_and_repository(tmp_path, monkeypatch):
+    shared = tmp_path / "connector"
+    writable = tmp_path / "user"
+    shared.mkdir()
+    writable.mkdir()
+    (shared / PROJECT_NAME).write_text("platform: {vessel_name: Shared}\n", encoding="utf-8")
+    (writable / PROJECT_NAME).write_text("platform: {instrument: User}\n", encoding="utf-8")
+    monkeypatch.setenv(CONFIG_DIR_ENV, str(shared))
+    monkeypatch.setenv(USER_CONFIG_DIR_ENV, str(writable))
+    repository = tmp_path / "repo"
+    (repository / ".git").mkdir(parents=True)
+    (repository / PROJECT_NAME).write_text("platform: {vessel_name: Repository}\n", encoding="utf-8")
+    assert config_paths(repository) == [
+        shared / PROJECT_NAME,
+        writable / PROJECT_NAME,
+        repository / PROJECT_NAME,
+    ]
 
 
 def test_a_new_manifest_starts_from_the_users_own_template(tmp_path):
@@ -122,6 +183,44 @@ def test_an_exported_token_wins_over_a_stored_one(monkeypatch):
     write_token("stored")
     monkeypatch.setenv("ZENODO_ACCESS_TOKEN", "exported")
     assert read_token() == "exported"
+
+
+def test_renku_secret_files_are_data_not_shell_code(tmp_path):
+    secrets = tmp_path / "secrets"
+    secrets.mkdir()
+    (secrets / "zenodo.env").write_text(
+        "ZENODO_ACCESS_TOKEN=from-renku\nUNRELATED=value\nEVIL=$(whoami)\n",
+        encoding="utf-8",
+    )
+    (secrets / "not-read.txt").write_text("ZENODO_ACCESS_TOKEN=wrong\n", encoding="utf-8")
+    assert read_renku_secrets(secrets) == {"ZENODO_ACCESS_TOKEN": "from-renku"}
+
+
+def test_token_precedence_is_session_environment_renku_then_local(monkeypatch):
+    write_token("local")
+    monkeypatch.setattr(
+        "yacht_co2.userconfig.read_renku_secrets", lambda: {"ZENODO_ACCESS_TOKEN": "renku"}
+    )
+    assert read_token() == "renku"
+    monkeypatch.setenv("ZENODO_ACCESS_TOKEN", "environment")
+    assert read_token() == "environment"
+    assert read_token(session_token="session") == "session"
+
+
+def test_project_dotenv_loading_does_not_promote_a_local_token_over_renku(tmp_path, monkeypatch):
+    monkeypatch.delenv("ZENODO_ACCESS_TOKEN", raising=False)
+    config_dir().mkdir()
+    (config_dir() / SECRETS_NAME).write_text("ZENODO_ACCESS_TOKEN=local\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "yacht_co2.userconfig.read_renku_secrets", lambda: {"ZENODO_ACCESS_TOKEN": "renku"}
+    )
+
+    # Project discovery loads regular dotenv keys, but must leave Zenodo keys
+    # for read_token's explicit source ordering.
+    config_paths(tmp_path)
+
+    assert "ZENODO_ACCESS_TOKEN" not in os.environ
+    assert read_token() == "renku"
 
 
 def test_a_token_cannot_smuggle_a_second_line_into_the_file():

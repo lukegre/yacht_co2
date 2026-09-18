@@ -41,6 +41,8 @@ def campaigns(tmp_path):
 async def test_the_page_lists_the_campaign_folders_it_finds(user: User, campaigns):
     await user.open("/")
     await user.should_see("Yacht CO2")
+    await user.should_see("Open a published record")
+    await user.should_see("Import raw logs")
     await user.should_see("Campaign folders")
     await user.should_see("2306_fastnet")
     # No folder is chosen yet, so there are no steps to show.
@@ -146,6 +148,50 @@ async def test_what_a_campaign_produced_is_opened_by_the_desktop(user: User, fin
     # whichever editor claims the extension.
     user.find("Run report").click()
     await user.should_see("yacht_co2-fastnet_race-2023_07_24-report.json")
+
+
+async def test_renku_downloads_completed_campaign_artifacts(user: User, finished, monkeypatch):
+    """A Renku browser gets attachment routes, never container desktop actions."""
+    monkeypatch.setenv(app.RENKU_BASE_URL_PATH_ENV, "/sessions/example")
+    opened: list[Path] = []
+    monkeypatch.setattr(components, "open_file", opened.append)
+    monkeypatch.setattr(components, "reveal", opened.append)
+
+    await user.open("/")
+    user.find(marker="campaign-2306_fastnet").click()
+    for key, label in (
+        ("site", "Interactive page"),
+        ("track", "Dataset (NetCDF)"),
+        ("report", "Run report"),
+    ):
+        await user.should_see(f"Download {label}")
+        buttons = user.find(marker=f"download-{key}").elements
+        assert buttons
+        assert {button._props["href"] for button in buttons} == {
+            f"/sessions/example/artifacts/2306_fastnet/{key}"
+        }
+    assert opened == []
+
+
+async def test_renku_keeps_the_right_key_when_only_one_artifact_exists(
+    user: User, finished, monkeypatch
+):
+    """Filtering absent artifacts does not shift the NetCDF route onto the site key."""
+    for path in finished.glob("*site.html"):
+        path.unlink()
+    for path in finished.glob("*report.json"):
+        path.unlink()
+    monkeypatch.setenv(app.RENKU_BASE_URL_PATH_ENV, "/sessions/example")
+
+    await user.open("/")
+    user.find(marker="campaign-2306_fastnet").click()
+
+    await user.should_see("Download Dataset (NetCDF)")
+    assert {button._props["href"] for button in user.find(marker="download-track").elements} == {
+        "/sessions/example/artifacts/2306_fastnet/track"
+    }
+    await user.should_not_see(marker="download-site")
+    await user.should_not_see(marker="download-report")
 
 
 async def test_the_manifest_form_shows_the_campaigns_own_settings(user: User, finished):

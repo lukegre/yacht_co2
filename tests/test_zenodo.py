@@ -794,10 +794,13 @@ def test_sandbox_uses_dedicated_environment_token(tmp_path, monkeypatch):
     assert captured == {"token": "sandbox-token", "sandbox": True}
 
 
-def test_token_is_loaded_from_folder_dotenv_without_overriding_exports(tmp_path, monkeypatch):
+def test_token_is_loaded_from_user_config_dotenv_without_overriding_exports(tmp_path, monkeypatch):
     _write_config(tmp_path)
     (tmp_path / "data.log").write_text("data")
-    (tmp_path / ".env").write_text("ZENODO_ACCESS_TOKEN=folder-token\n")
+    from yacht_co2.userconfig import config_dir
+
+    config_dir().mkdir()
+    (config_dir() / ".env").write_text("ZENODO_ACCESS_TOKEN=config-token\n")
     fake = FakeClient()
     captured = {}
 
@@ -813,7 +816,7 @@ def test_token_is_loaded_from_folder_dotenv_without_overriding_exports(tmp_path,
     (tmp_path / STATE_NAME).unlink()
     monkeypatch.delenv("ZENODO_ACCESS_TOKEN")
     upload_raw_folder(tmp_path)
-    assert captured == {"token": "folder-token", "sandbox": False}
+    assert captured == {"token": "config-token", "sandbox": False}
 
 
 class FakeResponse:

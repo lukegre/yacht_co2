@@ -35,6 +35,7 @@ from .project import (
     load_environment,
     read_yaml,
 )
+from .userconfig import read_token
 
 CONFIG_NAME = "zenodo.yaml"
 # Shared metadata lives beside the platform defaults, in one project file with
@@ -1113,6 +1114,7 @@ def upload_raw_folder(
     record_id: str | int | None = None,
     prune: bool = False,
     dry_run: bool = False,
+    token: str | None = None,
     client: ZenodoClient | None = None,
     today: date | None = None,
 ) -> dict[str, Any]:
@@ -1131,6 +1133,10 @@ def upload_raw_folder(
     if not folder_path.is_dir():
         raise ZenodoError(f"folder does not exist or is not a directory: {folder_path}")
     config_path = Path(config).resolve() if config is not None else folder_path / CONFIG_NAME
+    inherited_tokens = {
+        False: os.environ.get("ZENODO_ACCESS_TOKEN", ""),
+        True: os.environ.get("ZENODO_SANDBOX_ACCESS_TOKEN", ""),
+    }
     overrides: dict[str, Any] = {
         "title": title,
         "campaign": campaign,
@@ -1179,12 +1185,17 @@ def upload_raw_folder(
 
     use_sandbox = bool(resolved.get("sandbox", sandbox))
     if client is None:
-        _load_zenodo_environment(folder_path, config_path)
         variable = "ZENODO_SANDBOX_ACCESS_TOKEN" if use_sandbox else "ZENODO_ACCESS_TOKEN"
-        token = os.environ.get(variable)
-        if not token:
-            raise ZenodoError(f"{variable} is required")
-        client = ZenodoClient(token, sandbox=use_sandbox)
+        resolved_token = (
+            token
+            or read_token(sandbox=use_sandbox, environment_token=inherited_tokens[use_sandbox])
+        ).strip()
+        if not resolved_token:
+            raise ZenodoError(
+                f"{variable} is required; Zenodo uploads are unavailable. Add it as a Renku "
+                "secret (/secrets/*.env) or paste it into the GUI for this session."
+            )
+        client = ZenodoClient(resolved_token, sandbox=use_sandbox)
 
     state = _load_state(folder_path)
     if state and "sandbox" in state and bool(state["sandbox"]) != use_sandbox and not record_id:

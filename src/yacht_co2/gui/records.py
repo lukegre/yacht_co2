@@ -20,6 +20,8 @@ from nicegui import run, ui
 from ..errors import YachtCO2Error
 from ..manifest import MANIFEST_NAME
 from ..record import PublishedRecord, RecordFile, import_record, read_record
+from ..workflow import campaign_status
+from .artifacts import download_button, is_renku
 from .components import show_artifact
 
 #: What each kind of file in a record is called on the page.
@@ -314,12 +316,22 @@ class RecordPanel:
             shown = [path for path in downloaded if path.name in products]
             if shown:
                 with ui.row().classes("gap-2 flex-wrap"):
-                    for path in shown:
-                        ui.button(
-                            path.name,
-                            icon="visibility",
-                            on_click=lambda path=path: show_artifact(path),
-                        ).props("flat dense").classes("normal-case")
+                    if is_renku():
+                        status = campaign_status(folder)
+                        for key, label, path in (
+                            ("site", "Interactive page", status.site),
+                            ("track", "Dataset (NetCDF)", status.track),
+                            ("report", "Run report", status.report),
+                        ):
+                            if path is not None:
+                                download_button(label, folder.name, key)
+                    else:
+                        for path in shown:
+                            ui.button(
+                                path.name,
+                                icon="visibility",
+                                on_click=lambda path=path: show_artifact(path),
+                            ).props("flat dense").classes("normal-case")
             else:
                 ui.label(
                     "The folder is now listed above, ready for the steps to be run over it."
