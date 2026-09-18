@@ -182,8 +182,8 @@ class Workbench:
                 ui.image(LOGO_PATH).classes("h-full w-full").props("fit=contain")
             with ui.row().classes("grow items-center px-6 py-3"):
                 ui.label("From sailboat CO₂ logs to a citable record").classes(
-                    "grow text-left text-lg opacity-90"
-                )
+                    "grow text-left pl-4 opacity-90"
+                ).style("font-family: Inter, sans-serif; font-size: 16px; font-weight: 400")
                 with ui.row().classes("items-center gap-2"):
                     self._zenodo_status()
                     self._settings_menu()
