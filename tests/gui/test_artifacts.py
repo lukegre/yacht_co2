@@ -95,3 +95,73 @@ def test_download_route_returns_not_found_for_an_invalid_key(
         app.artifact_download(folder.name, "../report")
 
     assert error.value.status_code == 404
+
+
+def test_docker_mode_uses_browser_artifacts(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(artifacts, "DOCKER_ENV", "/container-marker")
+    monkeypatch.setattr(Path, "is_file", lambda path: str(path) == "/container-marker")
+    monkeypatch.delenv(artifacts.RENKU_BASE_URL_PATH_ENV, raising=False)
+    assert artifacts.use_browser_artifacts()
+
+
+def test_non_docker_mode_keeps_desktop_artifacts_even_behind_renku(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(artifacts, "DOCKER_ENV", "/container-marker")
+    monkeypatch.setattr(Path, "is_file", lambda path: False)
+    monkeypatch.setenv(artifacts.RENKU_BASE_URL_PATH_ENV, "/sessions/example")
+    assert not artifacts.use_browser_artifacts()
+
+
+def test_site_preview_route_is_inline_and_allowlisted(
+    artifact_folder: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+):
+    root, folder = artifact_folder
+    monkeypatch.setattr(app, "read_settings", lambda: {"data_root": str(root)})
+    response = app.artifact_view(folder.name, "site")
+    assert response.media_type == "text/html"
+    assert "content-disposition" not in response.headers
+
+
+def test_folder_download_contains_only_regular_files_and_sets_zip_filename(
+    artifact_folder: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+):
+    root, folder = artifact_folder
+    (folder / "nested").mkdir()
+    (folder / "nested" / "notes.txt").write_text("notes", encoding="utf-8")
+    outside = root / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+    (folder / "leak.txt").symlink_to(outside)
+    monkeypatch.setattr(app, "read_settings", lambda: {"data_root": str(root)})
+
+    response = app.campaign_folder_download(folder.name)
+    try:
+        import zipfile
+
+        with zipfile.ZipFile(response.path) as archive:
+            assert sorted(archive.namelist()) == [
+                "nested/notes.txt",
+                "yacht_co2-fastnet_race-2023_07_24-report.json",
+                "yacht_co2-fastnet_race-2023_07_24-site.html",
+                "yacht_co2-fastnet_race-2023_07_24-track.nc",
+                "zenodo.yaml",
+            ]
+            assert archive.read("nested/notes.txt") == b"notes"
+    finally:
+        Path(response.path).unlink(missing_ok=True)
+    assert response.media_type == "application/zip"
+    assert response.headers["content-disposition"].endswith('filename="fastnet.zip"')
+
+
+def test_folder_download_rejects_symlinked_campaign(
+    artifact_folder: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+):
+    root, folder = artifact_folder
+    alias = root / "alias"
+    alias.symlink_to(folder, target_is_directory=True)
+    monkeypatch.setattr(app, "read_settings", lambda: {"data_root": str(root)})
+
+    with pytest.raises(HTTPException) as error:
+        app.campaign_folder_download("alias")
+
+    assert error.value.status_code == 404

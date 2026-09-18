@@ -45,7 +45,6 @@ SECTION_KEYS: dict[str, frozenset[str]] = {
     "campaign": frozenset({"id", "name", "date"}),
     "expedition": frozenset({"id", "name", "date"}),
     "inputs": frozenset({"logs", "repository", "timezone"}),
-    "phases": frozenset({"analysis", "air", "zero", "span"}),
     "calibration": frozenset(
         {
             "method",
@@ -370,8 +369,8 @@ def validate_manifest_document(raw: Any, path: str | Path) -> list[Finding]:
         check.string(value, f"columns.{key}")
 
     phases = check.mapping(raw.get("phases"), "phases")
-    for key in ("analysis", "air"):
-        check.int_list(phases.get(key), f"phases.{key}")
+    for key, codes in phases.items():
+        check.int_list(codes, f"phases.{key}")
 
     _check_calibration(check, raw)
 

@@ -175,7 +175,8 @@ def build_manifest(
     they have none. The campaign ID follows Zenodo's slug rule: an
     explicit slug wins, otherwise the data-folder name is used. A Zenodo
     campaign is preferred as the concise name; an explicit title is accepted
-    as a fallback.
+    as a fallback. When the configuration has a DOI, inputs use that archive;
+    without one the manifest selects the local ``./*.log`` files instead.
     """
     zenodo_path = Path(zenodo).resolve()
     if not zenodo_path.is_file():
@@ -199,14 +200,20 @@ def build_manifest(
     logger.info("Resolved campaign id {!r} and name {!r}", campaign_id, name)
 
     repository = str(zenodo_document.get("doi") or "").strip()
-    if not repository:
-        raise ManifestError(f"{zenodo_path} needs doi to supply the default inputs.repository")
 
     document = dict(template)
     document["campaign"] = {"id": campaign_id, "name": name}
     if date:
         document["campaign"]["date"] = date
-    document["inputs"] = {**document.get("inputs", {}), "repository": repository}
+    inputs = dict(document.get("inputs", {}))
+    if repository:
+        inputs["repository"] = repository
+    else:
+        # User defaults may point at an archive. A campaign explicitly built
+        # without a DOI instead reads the raw logs beside its manifest.
+        inputs.pop("repository", None)
+        inputs["logs"] = "./*.log"
+    document["inputs"] = inputs
     document.pop("expedition", None)
     destination = (
         Path(output).resolve() if output is not None else zenodo_path.with_name(MANIFEST_NAME)

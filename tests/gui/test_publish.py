@@ -37,6 +37,26 @@ def processed(tmp_path):
     return folder
 
 
+@pytest.fixture
+def processed_locally(tmp_path):
+    """A locally processed campaign whose raw logs were not archived."""
+    root = tmp_path / "data"
+    folder = root / "2306_fastnet"
+    folder.mkdir(parents=True)
+    (folder / "230724_001.log").write_text("raw\n", encoding="utf-8")
+    (folder / "zenodo.yaml").write_text(
+        "campaign: Fastnet Race\ncampaign_date: 2023-07-24\n", encoding="utf-8"
+    )
+    document = load_document(packaged_defaults())
+    write_path(document, ("campaign",), {"id": "fastnet", "name": "Fastnet Race"})
+    write_path(document, ("campaign", "date"), "2023-07-24")
+    save_document(document, folder / "manifest.yaml")
+    for name in ("track.nc", "report.json", "site.html"):
+        (folder / f"yacht_co2-fastnet_race-2023_07_24-{name}").write_text("x", encoding="utf-8")
+    write_settings({"data_root": str(root)})
+    return folder
+
+
 def _upload_state(folder, status: str, **extra) -> None:
     (folder / ".zenodo-upload.json").write_text(
         json.dumps({"record_id": "12345", "status": status, **extra}), encoding="utf-8"
@@ -117,3 +137,28 @@ async def test_publishing_reports_a_frozen_record_rather_than_success(
         "Nothing uploaded: the record is still awaiting review.", retries=50
     )
     await user.should_not_see("Publishing the products finished.")
+
+
+async def test_locally_processed_campaign_can_publish_only_its_products(
+    user: User, processed_locally, monkeypatch
+):
+    calls: list[dict] = []
+
+    def upload(folder, **options):
+        calls.append({"folder": folder, **options})
+        return {"status": "published", "record_id": "12345"}
+
+    monkeypatch.setattr("yacht_co2.gui.app.upload_raw_folder", upload)
+    await user.open("/")
+    user.find(marker="campaign-2306_fastnet").click()
+    await user.should_see("Publish processed data")
+    user.find("Publish processed data").click()
+    await user.should_see("Uploaded to Zenodo.", retries=50)
+
+    assert len(calls) == 1
+    assert calls[0]["new_version"] is False
+    assert {path.name for path in calls[0]["files"]} == {
+        "yacht_co2-fastnet_race-2023_07_24-track.nc",
+        "yacht_co2-fastnet_race-2023_07_24-report.json",
+        "yacht_co2-fastnet_race-2023_07_24-site.html",
+    }

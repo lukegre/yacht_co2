@@ -154,16 +154,6 @@ MANIFEST_GROUPS: tuple[tuple[str, tuple[Field, ...]], ...] = (
         ),
     ),
     (
-        "Sampling phases",
-        (
-            Field(("phases", "analysis"), "Seawater", "integers", "Phase codes measuring the sea."),
-            Field(("phases", "air"), "Air", "integers", "Phase codes measuring the atmosphere."),
-            Field(("phases", "zero"), "Zero", "integers", "Phase codes on the zero gas."),
-            Field(("phases", "purge"), "Purge", "integers"),
-            Field(("phases", "test"), "Test", "integers"),
-        ),
-    ),
-    (
         "Calibration",
         (
             Field(
@@ -198,14 +188,6 @@ MANIFEST_GROUPS: tuple[tuple[str, tuple[Field, ...]], ...] = (
             Field(("qc", "ranges", "co2"), "Plausible CO2", "range", "umol/mol"),
             Field(("qc", "ranges", "watertemp"), "Plausible temperature", "range", "degrees C"),
             Field(("qc", "ranges", "salinity"), "Plausible salinity", "range", "practical"),
-            Field(
-                ("qc", "phase_transition_lag", "analysis"),
-                "Settling after seawater switch",
-                "number",
-                "Seconds flagged after the instrument switches phase.",
-            ),
-            Field(("qc", "phase_transition_lag", "air"), "Settling after air switch", "number"),
-            Field(("qc", "phase_transition_lag", "zero"), "Settling after zero switch", "number"),
         ),
     ),
     (
@@ -219,9 +201,18 @@ MANIFEST_GROUPS: tuple[tuple[str, tuple[Field, ...]], ...] = (
                 ("netcdf", "zarr", "csv"),
             ),
             Field(("outputs", "directory"), "Written to", placeholder="./"),
-            Field(("outputs", "site"), "Build the interactive page", "switch"),
-            Field(("outputs", "single_html"), "As one self-contained file", "switch"),
-            Field(("outputs", "video"), "Render the video (needs FFmpeg)", "switch"),
+            Field(
+                ("outputs", "site"),
+                "Build interactive page",
+                "switch",
+                "Create the browsable HTML campaign page after processing.",
+            ),
+            Field(
+                ("outputs", "single_html"),
+                "Make the page self-contained",
+                "switch",
+                "Embed its data and assets in one portable HTML file.",
+            ),
         ),
     ),
 )

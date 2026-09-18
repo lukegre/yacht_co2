@@ -214,12 +214,11 @@ def warn_when_manifest_is_stale(manifest: CampaignManifest, config: Path) -> Non
 
 
 def run_campaign(manifest: str | Path) -> RunResult:
-    """Archive a campaign on Zenodo and build every product from the record.
+    """Optionally archive a campaign, then build every product from its logs.
 
-    The manifest's folder is the campaign, and the run archives its raw logs,
-    reads them back from the record, processes them, writes the report and
-    builds the single-file site beside them. Nothing is redone: an existing
-    upload or product is kept, so a rerun resumes where the last one stopped.
+    A manifest with ``inputs.repository`` follows the archived workflow. A
+    manifest without it deliberately skips upload and reads its local logs.
+    Either route processes the data, writes the report and builds the site.
     """
     manifest_path = Path(manifest).resolve()
     campaign_manifest = load_manifest(manifest_path)
@@ -232,7 +231,10 @@ def run_campaign(manifest: str | Path) -> RunResult:
     if not campaign_date:
         raise ManifestError(f"{manifest_path} does not give the campaign date")
 
-    if upload_checkpoint_matches(folder, config_path):
+    repository = str(campaign_manifest.inputs.get("repository") or "").strip()
+    if not repository:
+        logger.info("Manifest uses local logs; skipping the Zenodo archive step")
+    elif upload_checkpoint_matches(folder, config_path):
         logger.info("Zenodo upload checksums match; continuing with the processing pipeline")
     else:
         upload: dict[str, Any] | None = None
@@ -350,6 +352,8 @@ class CampaignStatus:
     manifest_error: str = ""
     #: ``draft``, ``pending_review`` or ``published``, as the last upload left it.
     upload_status: str = ""
+    #: True when the persisted manifest deliberately reads local logs.
+    archive_skipped: bool = False
 
     @property
     def has_logs(self) -> bool:
@@ -359,6 +363,11 @@ class CampaignStatus:
     def is_uploaded(self) -> bool:
         """True once a DOI has been reserved for this folder."""
         return bool(self.doi)
+
+    @property
+    def archive_complete(self) -> bool:
+        """True when archiving succeeded or the manifest explicitly skips it."""
+        return self.is_uploaded or self.archive_skipped
 
     @property
     def has_manifest(self) -> bool:
@@ -424,6 +433,7 @@ def campaign_status(folder: str | Path) -> CampaignStatus:
     pattern = "./*.log"
     manifest_error = ""
     directory = folder
+    archive_skipped = False
 
     if manifest_path.is_file():
         try:
@@ -435,6 +445,7 @@ def campaign_status(folder: str | Path) -> CampaignStatus:
             campaign_date = loaded.date
             pattern = str(loaded.inputs.get("logs") or pattern)
             directory = loaded.resolve_path(loaded.outputs.get("directory", "."))
+            archive_skipped = not bool(str(loaded.inputs.get("repository") or "").strip())
 
     logs = sorted(
         path
@@ -455,6 +466,7 @@ def campaign_status(folder: str | Path) -> CampaignStatus:
         site=_artifact(directory, campaign, campaign_date, "site", "html"),
         manifest_error=manifest_error,
         upload_status=str(read_upload_state(folder).get("status") or ""),
+        archive_skipped=archive_skipped,
     )
 
 

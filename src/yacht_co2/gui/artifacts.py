@@ -12,6 +12,7 @@ from nicegui import ui
 from ..workflow import campaign_status
 
 RENKU_BASE_URL_PATH_ENV = "RENKU_BASE_URL_PATH"
+DOCKER_ENV = "/.dockerenv"
 
 # These are deliberately keys rather than paths supplied by a browser.  The
 # values also keep the response metadata next to the allowlist it protects.
@@ -22,9 +23,14 @@ ARTIFACTS: Mapping[str, tuple[str, str]] = {
 }
 
 
-def is_renku() -> bool:
-    """Whether this server is running behind Renku's session proxy."""
-    return bool(os.environ.get(RENKU_BASE_URL_PATH_ENV))
+def is_docker() -> bool:
+    """Return whether the GUI is running in Docker's standard container marker."""
+    return Path(DOCKER_ENV).is_file()
+
+
+def use_browser_artifacts() -> bool:
+    """Use HTTP artifact actions inside Docker, where no host desktop exists."""
+    return is_docker()
 
 
 def resolve_download(data_root: Path, campaign: str, artifact_key: str) -> tuple[Path, str]:
@@ -59,6 +65,27 @@ def download_url(campaign: str, artifact_key: str) -> str:
     """
     base_path = os.environ.get(RENKU_BASE_URL_PATH_ENV, "").rstrip("/")
     return f"{base_path}/artifacts/{quote(campaign, safe='')}/{quote(artifact_key, safe='')}"
+
+
+def preview_url(campaign: str) -> str:
+    """Return the inline HTML preview route for a campaign's site artifact."""
+    base_path = os.environ.get(RENKU_BASE_URL_PATH_ENV, "").rstrip("/")
+    return f"{base_path}/artifacts/{quote(campaign, safe='')}/site/view"
+
+
+def folder_download_url(campaign: str) -> str:
+    """Return the browser URL for downloading one campaign folder as a ZIP."""
+    base_path = os.environ.get(RENKU_BASE_URL_PATH_ENV, "").rstrip("/")
+    return f"{base_path}/campaign-folders/{quote(campaign, safe='')}"
+
+
+def folder_download_button(campaign: str, *, marker: str | None = None) -> None:
+    """Draw a link-like button for a safe campaign-folder ZIP download."""
+    button = ui.button("Download folder", icon="download").props(
+        f"flat dense type=a href={folder_download_url(campaign)}"
+    )
+    if marker:
+        button.mark(marker)
 
 
 def download_button(label: str, campaign: str, artifact_key: str, *, marker: str | None = None) -> None:

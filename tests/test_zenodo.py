@@ -9,6 +9,7 @@ from loguru import logger
 from typer.testing import CliRunner
 
 from yacht_co2.errors import ZenodoError
+from yacht_co2.userconfig import config_dir
 from yacht_co2.zenodo import (
     CONFIG_NAME,
     DEFAULTS_BLOCK,
@@ -125,6 +126,36 @@ def test_missing_defaults_names_the_directories_searched(tmp_path, monkeypatch):
     folder.mkdir()
     with pytest.raises(ZenodoError, match=f"no '{DEFAULTS_BLOCK}' block"):
         load_zenodo_config(folder)
+
+
+def test_defaults_can_come_from_the_users_project_configuration(tmp_path, monkeypatch):
+    """Renku's writable project settings apply outside the source checkout."""
+    monkeypatch.chdir(tmp_path)
+    config_dir().mkdir()
+    write_defaults(config_dir(), PROJECT_DEFAULTS)
+    folder = tmp_path / "voyage"
+    folder.mkdir()
+    (folder / CONFIG_NAME).write_text("title: Test\n")
+
+    assert load_zenodo_config(folder)["community"] == "vendee-globe-co2"
+
+
+def test_upload_can_select_processed_files_without_the_raw_logs(tmp_path):
+    raw = tmp_path / "230724_001.log"
+    track = tmp_path / "campaign-track.nc"
+    report = tmp_path / "campaign-report.json"
+    raw.write_text("raw\n", encoding="utf-8")
+    track.write_text("track\n", encoding="utf-8")
+    report.write_text("{}\n", encoding="utf-8")
+
+    result = upload_raw_folder(
+        tmp_path,
+        title="Processed campaign data",
+        files=[track, report],
+        dry_run=True,
+    )
+
+    assert set(result["files"]) == {"campaign-track.nc", "campaign-report.json"}
 
 
 def test_a_project_file_without_a_zenodo_block_is_not_defaults(tmp_path, monkeypatch):

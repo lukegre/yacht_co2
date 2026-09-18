@@ -12,30 +12,38 @@ machine, without anyone remembering where it got to.
 from __future__ import annotations
 
 import os
+import tempfile
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal, cast
 
 from loguru import logger
 from nicegui import app, run, ui
+from starlette.background import BackgroundTask
 from starlette.exceptions import HTTPException
 from starlette.responses import FileResponse
 
 from ..manifest import MANIFEST_NAME, build_manifest
-from ..raw_import import process_raw_logs_directly
+from ..raw_import import ensure_campaign_config
 from ..userconfig import read_settings, read_token, write_settings
 from ..workflow import CampaignStatus, campaign_status, find_campaigns, run_campaign
 from ..zenodo import CONFIG_NAME as ZENODO_CONFIG_NAME
 from ..zenodo import upload_raw_folder
-from .artifacts import RENKU_BASE_URL_PATH_ENV, download_button, is_renku, resolve_download
-from .components import show_artifact
+from .artifacts import (
+    RENKU_BASE_URL_PATH_ENV,
+    download_button,
+    folder_download_button,
+    resolve_download,
+    use_browser_artifacts,
+)
+from .components import show_artifact, show_browser_artifact, show_json
 from .folders import FolderPicker
 from .jobs import RUNNER
 from .manifestform import ManifestForm
-from .opening import reveal
 from .raw_import import RawImportPanel
 from .records import RecordPanel
-from .settings import settings_panels
+from .settings import project_settings_findings, settings_panels
 
 #: The kinds of notification the page raises, as Quasar names them.
 Notification = Literal["positive", "negative", "warning", "info"]
@@ -94,6 +102,19 @@ def upload_outcome(result: Any) -> tuple[str, Notification]:
     return ("Uploaded to Zenodo.", "positive")
 
 
+def build_local_manifest(folder: Path, campaign: str, campaign_date: str) -> Path:
+    """Persist local campaign identity, then build its ordinary manifest."""
+    config = folder / ZENODO_CONFIG_NAME
+    created = not config.exists()
+    config = ensure_campaign_config(folder, campaign, campaign_date)
+    try:
+        return build_manifest(config)
+    except Exception:
+        if created:
+            config.unlink(missing_ok=True)
+        raise
+
+
 class Workbench:
     """One browser tab, showing one campaign folder at a time."""
 
@@ -111,21 +132,29 @@ class Workbench:
 
         self._build_header()
         with ui.column().classes("w-full max-w-5xl mx-auto p-4 gap-4"):
-            RecordPanel(
-                data_root=lambda: self.data_root,
-                start=self._start_later,
-                on_imported=self._select,
-            )
-            with ui.row().classes("w-full gap-4 items-stretch flex-wrap"):
-                with ui.column().classes("grow min-w-80"):
-                    self._chooser()
-                with ui.column().classes("grow min-w-80"):
+            with ui.column().classes("w-full gap-1"):
+                ui.label("Add campaign data").classes("text-lg font-medium")
+                ui.label(
+                    "Upload raw instrument logs or import an existing published record."
+                ).classes("text-sm text-gray-600")
+            with (
+                ui.row()
+                .classes("w-full gap-4 items-stretch flex-wrap")
+                .mark("landing-upload-row")
+            ):
+                with ui.column().classes("grow basis-0 min-w-80"):
                     RawImportPanel(
                         data_root=lambda: self.data_root,
                         start=self._start_later,
                         on_imported=self._select,
-                        process_directly=self._process_raw_logs_directly,
                     )
+                with ui.column().classes("grow basis-0 min-w-80"):
+                    RecordPanel(
+                        data_root=lambda: self.data_root,
+                        start=self._start_later,
+                        on_imported=self._select,
+                    )
+            self._chooser()
             self._steps()
         self._build_log()
         ui.timer(0.3, self._pump)
@@ -139,9 +168,48 @@ class Workbench:
                 ui.label("underway CO2, from raw logs to a published record").classes(
                     "text-sm opacity-90"
                 )
-            ui.button(icon="settings", color=None, on_click=self._open_settings).props(
-                "flat round aria-label=Settings"
-            ).classes("text-white").mark("settings-menu").tooltip("Settings")
+            with ui.row().classes("items-center gap-2"):
+                self._zenodo_status()
+                self._settings_menu()
+
+    @ui.refreshable_method
+    def _settings_menu(self) -> None:
+        """Show the settings cog, badging it when its project file needs attention."""
+        findings = project_settings_findings()
+        tooltip = "Settings"
+        if findings:
+            details = "; ".join(f"{finding.where}: {finding.message}" for finding in findings)
+            tooltip = f"project.yaml needs attention: {details}"
+
+        with ui.element("div").classes("relative"):
+            (
+                ui.button(icon="settings", color=None, on_click=self._open_settings)
+                .props("flat round aria-label=Settings")
+                .classes("text-white")
+                .mark("settings-menu")
+                .tooltip(tooltip)
+            )
+            if findings:
+                (
+                    ui.icon("warning")
+                    .classes("absolute -top-0.5 -right-0.5 text-amber-300 drop-shadow cursor-pointer")
+                    .props("aria-label='Project settings need attention'")
+                    .mark("project-settings-warning")
+                    .tooltip(tooltip)
+                    .on("click", self._open_settings)
+                )
+
+    @ui.refreshable_method
+    def _zenodo_status(self) -> None:
+        """Show when this browser session is able to archive to Zenodo."""
+        session_token = self.zenodo_tokens.get("ZENODO_ACCESS_TOKEN")
+        if read_token(session_token=session_token):
+            (
+                ui.button("Zenodo ready", icon="cloud_done", color="positive")
+                .props("unelevated dense no-caps")
+                .mark("zenodo-status")
+                .tooltip("A Zenodo token is available for archiving")
+            )
 
     def _open_settings(self) -> None:
         with ui.dialog().props("full-width") as dialog, ui.card().classes("w-full"):
@@ -153,6 +221,9 @@ class Workbench:
                     session_tokens=self.zenodo_tokens,
                 )
                 ui.button("Close", on_click=dialog.close).props("flat")
+        # Opening Settings may have created the editable project.yaml from its
+        # deliberately incomplete template, so update the header immediately.
+        self._settings_menu.refresh()
         dialog.open()
 
     def _build_log(self) -> None:
@@ -239,16 +310,55 @@ class Workbench:
                         ).classes("text-xs")
                     (
                         ui.button(icon="folder_open", color=None)
-                        .props("flat round dense aria-label='Show folder in file manager'")
+                        .props("flat round dense aria-label='Show folder contents'")
                         .classes("text-gray-500")
                         .mark(f"show-folder-{status.folder.name}")
-                        .tooltip("Show folder in file manager")
+                        .tooltip("Show folder contents")
                         .on(
                             "click",
-                            lambda: reveal(status.folder),
+                            lambda status=status: self._show_folder_contents(status.folder),
                             js_handler="event => { event.stopPropagation(); emit(); }",
                         )
                     )
+
+    def _show_folder_contents(self, folder: Path) -> None:
+        """List one campaign directory without handing it to the host desktop."""
+        try:
+            entries = sorted(folder.iterdir(), key=lambda path: (path.is_file(), path.name.lower()))
+            error = ""
+        except OSError as exc:
+            entries = []
+            error = f"Could not read this folder: {exc}"
+
+        with ui.dialog() as dialog, ui.card().classes("w-full max-w-2xl").mark(
+            "campaign-files-dialog"
+        ):
+            with ui.row().classes("w-full items-center justify-between"):
+                with ui.column().classes("gap-0"):
+                    ui.label("Folder contents").classes("text-lg font-medium")
+                    ui.label(folder.name).classes("text-sm font-medium")
+                    ui.label(str(folder)).classes("text-xs text-gray-500 break-all")
+                ui.button(icon="close", on_click=dialog.close).props(
+                    "flat round aria-label=Close"
+                )
+            if error:
+                ui.label(error).classes("text-sm text-red-600")
+            elif not entries:
+                ui.label("This folder is empty.").classes("text-sm text-gray-600")
+            else:
+                with ui.list().props("dense separator").classes("w-full border rounded"):
+                    for entry in entries:
+                        with ui.item():
+                            with ui.item_section().props("avatar"):
+                                ui.icon("folder" if entry.is_dir() else "insert_drive_file").classes(
+                                    "text-gray-500"
+                                )
+                            with ui.item_section():
+                                ui.item_label(entry.name).classes("text-sm break-all")
+            with ui.row().classes("w-full items-center justify-between"):
+                ui.button("Close", on_click=dialog.close).props("flat")
+                folder_download_button(folder.name, marker=f"download-folder-{folder.name}")
+        dialog.open()
 
     def _pick_root(self) -> None:
         if self.picker is None:
@@ -272,16 +382,10 @@ class Workbench:
     def refresh(self) -> None:
         """Re-read the selected folder and rebuild everything that describes it."""
         self.status = campaign_status(self.folder) if self.folder else None
+        self._zenodo_status.refresh()
+        self._settings_menu.refresh()
         self._chooser.refresh()
         self._steps.refresh()
-
-    def _process_raw_logs_directly(self, folder: Path, name: str, date: str) -> None:
-        """Run the imported local logs without first creating a Zenodo archive."""
-        self._start_later(
-            "Processing raw logs directly",
-            lambda: process_raw_logs_directly(folder, name, date),
-            then=lambda _result: self._select(folder),
-        )
 
     # -- running a step -------------------------------------------------
 
@@ -340,29 +444,48 @@ class Workbench:
         )
         with ui.stepper(value=STEPS[first]).props("vertical flat header-nav").classes("w-full"):
             for index, (marker, builder) in enumerate(builders):
-                # A step earlier than the open one is done, and "done" is
-                # what draws the check mark in place of the step number.
                 with (
                     ui.step(STEPS[index])
-                    .props("done" if index < first else "")
+                    .props(self._step_status(marker, status))
                     .mark(f"step-{marker}")
                 ):
                     builder(status)
+
+    @staticmethod
+    def _step_status(marker: str, status: CampaignStatus) -> str:
+        """Return the icon state for one step from facts, never its position.
+
+        The open step is merely where the user is looking.  It does not say
+        whether any other step was completed; in particular, an archive the
+        user deliberately skipped must not acquire a completion tick just
+        because a later manifest exists.
+        """
+        if marker == "archive":
+            if status.archive_skipped:
+                return "icon=skip_next"
+            return "done" if status.is_uploaded else ""
+        if marker == "manifest":
+            return "done" if status.has_manifest else ""
+        if marker in {"settings", "process"}:
+            # Processing is the durable evidence that the reviewed settings
+            # were used; there is intentionally no separate settings state.
+            return "done" if status.is_processed else ""
+        return ""
 
     def _first_unfinished(self) -> int:
         """Open the stepper on the first step this folder has not been through."""
         status = self.status
         assert status is not None
-        if not status.is_uploaded:
-            return 0
         # A folder downloaded from a published record has the products before
         # it has a manifest, and someone who downloaded them came to look at
         # them: that is the last step's business rather than the second's.
         if status.is_processed:
             return 4
-        if not status.has_manifest:
+        if status.has_manifest:
+            return 2
+        if status.is_uploaded:
             return 1
-        return 2
+        return 0
 
     def _step_archive(self, status: CampaignStatus) -> None:
         ui.label(
@@ -429,11 +552,31 @@ class Workbench:
             ui.button("Check without uploading", on_click=lambda: upload(True)).props("flat")
             ui.button("Archive on Zenodo", icon="cloud_upload", on_click=lambda: upload(False))
 
+            def skip_archive() -> None:
+                campaign = str(name.value or "").strip()
+                campaign_date = str(date.value or "").strip()
+                if not campaign or not campaign_date:
+                    token_note.set_text(
+                        "A campaign name and date are needed to build the local manifest."
+                    )
+                    token_note.classes(replace="text-sm text-red-600")
+                    return
+                self._start_later(
+                    "Building a local manifest",
+                    lambda: build_local_manifest(status.folder, campaign, campaign_date),
+                )
+
+            ui.button(
+                "Skip archiving",
+                icon="skip_next",
+                on_click=skip_archive,
+            ).props("flat").mark("skip-archive")
+
     def _step_manifest(self, status: CampaignStatus) -> None:
         ui.label(
             "The manifest says how this campaign is processed. It starts from your "
-            "processing defaults and takes the campaign's name, date and record from "
-            "the archive."
+            "processing defaults and takes the campaign's name and date from its import "
+            "details. If the raw logs were archived, it also names their Zenodo record."
         ).classes("text-sm text-gray-600")
 
         if status.has_manifest:
@@ -442,10 +585,6 @@ class Workbench:
         if status.zenodo_config is None:
             self._blocked(f"Archive the folder first; it has no {ZENODO_CONFIG_NAME}.")
             return
-        if not status.doi:
-            self._blocked("The archive has not reserved a DOI for this folder yet.")
-            return
-
         config = status.zenodo_config
         ui.button(
             "Build the manifest",
@@ -487,21 +626,24 @@ class Workbench:
         )
 
     def _step_publish(self, status: CampaignStatus) -> None:
-        ui.label(
-            "Adds the processed dataset, report and page to the record as a new version. "
-            "The previous version's files are imported, so nothing is uploaded twice."
-        ).classes("text-sm text-gray-600")
-
         if not status.is_processed:
+            ui.label(
+                "Adds the processed dataset, report and page to the record as a new version. "
+                "The previous version's files are imported, so nothing is uploaded twice."
+            ).classes("text-sm text-gray-600")
             self._blocked("Process the campaign first.")
             return
         if status.zenodo_config is None:
+            ui.label(
+                "Adds the processed dataset, report and page to the record as a new version. "
+                "The previous version's files are imported, so nothing is uploaded twice."
+            ).classes("text-sm text-gray-600")
             self._blocked(f"This folder has no {ZENODO_CONFIG_NAME}.")
             return
 
         self._artifacts(status)
 
-        if status.review_is_pending:
+        if status.is_uploaded and status.review_is_pending:
             # A record's files are frozen while its review is open, so this
             # step would complete without archiving anything. Better to say so
             # than to let it look as though it worked.
@@ -515,6 +657,41 @@ class Workbench:
             return
 
         folder, config = status.folder, status.zenodo_config
+        products = tuple(
+            path for path in (status.track, status.report, status.site) if path is not None
+        )
+
+        if not status.is_uploaded:
+            ui.label(
+                "The raw logs have not been archived. You can publish just the processed "
+                "dataset, report and page as their own Zenodo record."
+            ).classes("text-sm text-gray-600")
+
+            def publish_products(dry_run: bool) -> None:
+                self._start_later(
+                    "Publishing the processed data",
+                    lambda: archive(
+                        folder,
+                        config=config,
+                        files=products,
+                        publish=True,
+                        new_version=False,
+                        dry_run=dry_run,
+                    ),
+                    outcome=upload_outcome,
+                )
+
+            with ui.row().classes("gap-2"):
+                ui.button("Check processed data", on_click=lambda: publish_products(True)).props("flat")
+                ui.button(
+                    "Publish processed data", icon="cloud_upload", on_click=lambda: publish_products(False)
+                )
+            return
+
+        ui.label(
+            "Adds the processed dataset, report and page to the record as a new version. "
+            "The previous version's files are imported, so nothing is uploaded twice."
+        ).classes("text-sm text-gray-600")
 
         def publish(dry_run: bool) -> None:
             self._start_later(
@@ -567,12 +744,9 @@ class Workbench:
     def _artifacts(self, status: CampaignStatus) -> None:
         """Show whatever this campaign has already produced.
 
-        Each of these is handled by the desktop rather than by the browser.
-        The workbench may be drawn in a native window, which has no second tab
-        to open and no downloads folder to put a file in, so a link would do
-        nothing there; the server is the same machine as the desktop, so it
-        asks the desktop instead and both ways of drawing the page behave the
-        same.
+        Docker has no host desktop, so it previews and downloads through safe
+        browser routes. A non-container installation can hand files to its
+        own browser or file manager, including from the packaged native UI.
         """
         built = [
             ("site", "Interactive page", status.site, "public"),
@@ -585,8 +759,21 @@ class Workbench:
         with ui.row().classes("gap-2 flex-wrap"):
             for key, label, path, icon in built:
                 assert path is not None
-                if is_renku():
-                    download_button(label, status.folder.name, key, marker=f"download-{key}")
+                if use_browser_artifacts():
+                    if key == "site":
+                        ui.button(
+                            label,
+                            icon=icon,
+                            on_click=lambda campaign=status.folder.name: show_browser_artifact(
+                                campaign, "site"
+                            ),
+                        ).props("flat dense").mark(f"download-{key}")
+                    elif key == "report":
+                        ui.button(label, icon=icon, on_click=lambda path=path: show_json(path)).props(
+                            "flat dense"
+                        ).mark(f"download-{key}")
+                    else:
+                        download_button(label, status.folder.name, key, marker=f"download-{key}")
                 else:
                     ui.button(
                         label,
@@ -624,6 +811,65 @@ def artifact_download(campaign: str, artifact_key: str) -> FileResponse:
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="Campaign artifact not found") from exc
     return FileResponse(path, media_type=content_type, filename=path.name)
+
+
+@app.get("/artifacts/{campaign}/{artifact_key}/view")
+def artifact_view(campaign: str, artifact_key: str) -> FileResponse:
+    """Serve the allowlisted site artifact inline for browser previews."""
+    if artifact_key != "site":
+        raise HTTPException(status_code=404, detail="Campaign artifact not found")
+    settings = read_settings()
+    data_root = Path(settings.get("data_root") or Path.home())
+    try:
+        path, content_type = resolve_download(data_root, campaign, artifact_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Campaign artifact not found") from exc
+    return FileResponse(path, media_type=content_type, content_disposition_type="inline")
+
+
+def _folder_zip(data_root: Path, campaign: str) -> Path:
+    """Create a ZIP of a campaign folder, excluding symlinks and escapes."""
+    if not campaign or Path(campaign).name != campaign:
+        raise ValueError("unknown campaign folder")
+    root = data_root.expanduser().resolve()
+    candidate = root / campaign
+    if candidate.is_symlink():
+        raise ValueError("unknown campaign folder")
+    folder = candidate.resolve()
+    if folder.parent != root or not folder.is_dir():
+        raise ValueError("unknown campaign folder")
+    temporary = tempfile.NamedTemporaryFile(prefix="yacht-co2-", suffix=".zip", delete=False)
+    temporary_path = Path(temporary.name)
+    try:
+        with temporary, zipfile.ZipFile(temporary, "w", zipfile.ZIP_DEFLATED) as archive:
+            for path in sorted(folder.rglob("*")):
+                if path.is_symlink() or not path.is_file():
+                    continue
+                resolved = path.resolve()
+                if not resolved.is_relative_to(folder):
+                    continue
+                archive.write(resolved, resolved.relative_to(folder).as_posix())
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        raise
+    return temporary_path
+
+
+@app.get("/campaign-folders/{campaign}")
+def campaign_folder_download(campaign: str) -> FileResponse:
+    """Download a campaign folder without exposing arbitrary filesystem paths."""
+    settings = read_settings()
+    data_root = Path(settings.get("data_root") or Path.home())
+    try:
+        path = _folder_zip(data_root, campaign)
+    except (OSError, ValueError, zipfile.BadZipFile) as exc:
+        raise HTTPException(status_code=404, detail="Campaign folder not found") from exc
+    return FileResponse(
+        path,
+        media_type="application/zip",
+        filename=f"{campaign}.zip",
+        background=BackgroundTask(path.unlink, missing_ok=True),
+    )
 
 
 def launch(
@@ -666,7 +912,7 @@ def launch(
         port=port,
         root_path=effective_root_path,
         title="yacht-co2",
-        favicon="🌊",
+        favicon="⛵",
         # A native window is the showing, so asking for a browser too would
         # open the same page twice.
         show=show and not native,

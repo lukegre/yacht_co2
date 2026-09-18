@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import pytest
+import yaml
 
 from yacht_co2 import raw_import
 from yacht_co2.errors import YachtCO2Error
+from yacht_co2.manifest import load_manifest
 from yacht_co2.raw_import import (
     RawLog,
     UploadLimits,
+    ensure_campaign_config,
     import_raw_logs,
     normalise_campaign_id,
     process_raw_logs_directly,
@@ -35,6 +38,11 @@ def test_import_stages_files_and_never_overwrites_a_campaign(tmp_path):
 
     assert imported == root / "fastnet_race-2023-07-24"
     assert (imported / "one.log").read_bytes() == b"one"
+    archive_config = yaml.safe_load((imported / "zenodo.yaml").read_text(encoding="utf-8"))
+    assert archive_config == {
+        "campaign": "Fastnet Race",
+        "campaign_date": "2023-07-24",
+    }
     with pytest.raises(YachtCO2Error, match="already exists"):
         import_raw_logs(root, "Fastnet Race", "2023-07-24", [RawLog("new.log", b"new")])
     assert not (imported / "new.log").exists()
@@ -49,6 +57,23 @@ def test_import_preserves_an_existing_empty_campaign_folder(tmp_path):
 
     assert existing.is_dir()
     assert list(existing.iterdir()) == []
+
+
+def test_ensure_campaign_config_writes_metadata_and_preserves_existing_config(tmp_path):
+    folder = tmp_path / "legacy"
+
+    config = ensure_campaign_config(folder, "Défi Azimut", "2022-09")
+
+    assert yaml.safe_load(config.read_text(encoding="utf-8")) == {
+        "campaign": "Défi Azimut",
+        "campaign_date": "2022-09",
+    }
+    config.write_text("campaign: Edited\ndoi: 10.5281/zenodo.123\n", encoding="utf-8")
+    assert ensure_campaign_config(folder, "Other", "2024-01") == config
+    assert yaml.safe_load(config.read_text(encoding="utf-8")) == {
+        "campaign": "Edited",
+        "doi": "10.5281/zenodo.123",
+    }
 
 
 @pytest.mark.parametrize("filename", ["../outside.log", "nested/file.log", "nested\\file.log", "report.txt", ".log"])
@@ -75,26 +100,33 @@ def test_import_rejects_duplicates_and_limits_before_writing(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
-def test_direct_processing_uses_local_logs_without_writing_a_manifest(tmp_path, monkeypatch):
+def test_direct_processing_writes_a_manifest_that_uses_local_logs(tmp_path, monkeypatch):
     folder = tmp_path / "race-2023-07"
     folder.mkdir()
     source = folder / "source.log"
     source.write_bytes(b"raw source")
     captured = {}
 
-    class FakePipeline:
-        def __init__(self, manifest):
-            captured["manifest"] = manifest
+    def fake_run(manifest):
+        captured["manifest"] = manifest
+        return "processed"
 
-        def run(self):
-            return "processed"
-
-    monkeypatch.setattr(raw_import, "Pipeline", FakePipeline)
+    monkeypatch.setattr(raw_import, "run_campaign", fake_run)
 
     assert process_raw_logs_directly(folder, "Race", "2023-07") == "processed"
-    manifest = captured["manifest"]
+    manifest_path = folder / "manifest.yaml"
+    assert captured["manifest"] == manifest_path
+    manifest = load_manifest(manifest_path)
     assert manifest.inputs["logs"] == "./*.log"
     assert "repository" not in manifest.inputs
     assert manifest.campaign == {"id": "race-2023-07", "name": "Race", "date": "2023-07"}
     assert source.read_bytes() == b"raw source"
-    assert not (folder / "manifest.yaml").exists()
+    assert manifest.path == manifest_path
+    written = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    assert written["campaign"] == {
+        "id": "race-2023-07",
+        "name": "Race",
+        "date": "2023-07",
+    }
+    assert written["inputs"]["logs"] == "./*.log"
+    assert "repository" not in written["inputs"]

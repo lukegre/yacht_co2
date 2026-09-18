@@ -26,19 +26,18 @@ class RawImportPanel:
         data_root: Callable[[], Path],
         start: StartStep,
         on_imported: Callable[[Path], None],
-        process_directly: Callable[[Path, str, str], None],
     ) -> None:
         self.data_root = data_root
         self.start = start
         self.on_imported = on_imported
-        self.process_directly = process_directly
         self.files: list[RawLog] = []
-        self.imported_folder: Path | None = None
-        with ui.card().classes("w-full h-full"):
-            ui.label("Import raw logs").classes("font-medium")
+        with ui.card().classes("w-full h-full").mark("raw-import-panel"):
+            with ui.row().classes("items-center gap-2"):
+                ui.icon("upload_file").classes("text-primary")
+                ui.label("Import raw logs").classes("font-medium")
             ui.label(
-                "Drop OceanPack .log files here, name the campaign, and create a new folder. "
-                "The uploaded source logs are kept unchanged."
+                "Upload OceanPack .log files, name the campaign, and create a local campaign "
+                "folder. The source logs are kept unchanged."
             ).classes("text-sm text-gray-600")
             with ui.row().classes("w-full gap-2 flex-wrap"):
                 self.name = ui.input("Campaign name", placeholder="Fastnet Race").props(
@@ -49,30 +48,27 @@ class RawImportPanel:
                 ).classes("grow").mark("raw-import-date")
             self.upload = (
                 ui.upload(
-                    label="Drop .log files or choose files",
+                    label="Drop .log files here or choose files",
                     multiple=True,
                     auto_upload=True,
                     on_upload=self._received,
                 )
-                .props("accept=.log")
-                .classes("w-full")
+                .props("accept=.log flat bordered hide-upload-btn")
+                .classes("w-full rounded")
                 .mark("raw-log-upload")
             )
             self.selected = ui.label("No files selected.").classes("text-xs text-gray-500")
             with ui.row().classes("gap-2 flex-wrap"):
-                ui.button("Import logs", icon="upload_file", on_click=self._import).mark(
+                self.submit = ui.button("Import logs", icon="upload_file", on_click=self._import).mark(
                     "raw-import-submit"
                 )
-                self.direct = ui.button(
-                    "Process raw logs directly",
-                    icon="play_arrow",
-                    on_click=self._process_directly,
-                ).props("flat").mark("raw-import-process-direct")
-                self.direct.disable()
                 ui.button("Clear files", on_click=self._clear).props("flat dense")
             ui.label(f"New campaigns are created under {self.data_root()}.").classes(
                 "text-xs text-gray-500 break-all"
             )
+        self.name.on_value_change(lambda _: self._update_submit())
+        self.date.on_value_change(lambda _: self._update_submit())
+        self._update_submit()
 
     async def _received(self, event: Any) -> None:
         """Keep bytes in memory until the explicit all-or-nothing import action."""
@@ -86,6 +82,17 @@ class RawImportPanel:
     def _selection(self) -> None:
         total = sum(len(file.content) for file in self.files)
         self.selected.set_text(f"{len(self.files)} selected file(s), {total:,} bytes.")
+        self._update_submit()
+
+    def _update_submit(self) -> None:
+        """Keep the import action unavailable until its required inputs are valid."""
+        try:
+            normalise_campaign_id(str(self.name.value or ""), str(self.date.value or ""))
+        except YachtCO2Error:
+            ready = False
+        else:
+            ready = bool(self.files)
+        self.submit.enable() if ready else self.submit.disable()
 
     def _clear(self) -> None:
         self.files.clear()
@@ -101,8 +108,6 @@ class RawImportPanel:
             return
 
         def imported(folder: Path) -> None:
-            self.imported_folder = folder
-            self.direct.enable()
             self._clear()
             self.on_imported(folder)
             ui.notify(f"Imported logs into {folder.name}.", type="positive")
@@ -114,10 +119,3 @@ class RawImportPanel:
             ),
             then=imported,
         )
-
-    def _process_directly(self) -> None:
-        folder = self.imported_folder
-        if folder is None:
-            ui.notify("Import logs first.", type="warning")
-            return
-        self.process_directly(folder, str(self.name.value or ""), str(self.date.value or ""))

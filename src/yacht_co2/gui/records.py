@@ -21,7 +21,7 @@ from ..errors import YachtCO2Error
 from ..manifest import MANIFEST_NAME
 from ..record import PublishedRecord, RecordFile, import_record, read_record
 from ..workflow import campaign_status
-from .artifacts import download_button, is_renku
+from .artifacts import download_button, use_browser_artifacts
 from .components import show_artifact
 
 #: What each kind of file in a record is called on the page.
@@ -93,15 +93,15 @@ class RecordPanel:
         self.folder: ui.input | None = None
         self.outcome: ui.column | None = None
 
-        with ui.expansion("Open a published record", icon="cloud_download").classes(
-            "w-full border rounded bg-white"
-        ):
-            with ui.column().classes("w-full gap-3 p-2"):
+        with ui.card().classes("w-full h-full").mark("record-panel"):
+            with ui.row().classes("items-center gap-2"):
+                ui.icon("cloud_download").classes("text-primary")
+                ui.label("Open a published record").classes("font-medium")
+            with ui.column().classes("w-full gap-3"):
                 ui.label(
-                    "A campaign that has already been archived can be worked on here "
-                    "without its raw files. Give the DOI: whatever the record was "
-                    "published with is downloaded as it is, and its raw logs come down "
-                    "into a campaign folder the five steps then apply to."
+                    "Import a campaign from Zenodo by entering its DOI or record URL. "
+                    "Choose its published products or download its raw logs into a local "
+                    "campaign folder."
                 ).classes("text-sm text-gray-600")
                 with ui.row().classes("w-full items-center gap-2"):
                     self.reference = (
@@ -316,7 +316,7 @@ class RecordPanel:
             shown = [path for path in downloaded if path.name in products]
             if shown:
                 with ui.row().classes("gap-2 flex-wrap"):
-                    if is_renku():
+                    if use_browser_artifacts():
                         status = campaign_status(folder)
                         for key, label, path in (
                             ("site", "Interactive page", status.site),

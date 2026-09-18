@@ -116,12 +116,21 @@ def test_build_manifest_accepts_explicit_zenodo_title(tmp_path):
     }
 
 
-def test_build_manifest_requires_a_zenodo_repository(tmp_path):
+def test_build_manifest_without_a_repository_uses_and_validates_local_logs(tmp_path):
     zenodo = tmp_path / "zenodo.yaml"
-    zenodo.write_text("campaign: Unpublished campaign\n")
+    zenodo.write_text("campaign: Unpublished campaign\ncampaign_date: 2024-08\n")
+    (tmp_path / "source.log").write_text("raw", encoding="utf-8")
 
-    with pytest.raises(ManifestError, match="needs doi.*inputs.repository"):
-        build_manifest(zenodo)
+    path = build_manifest(zenodo)
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert document["inputs"]["logs"] == "./*.log"
+    assert "repository" not in document["inputs"]
+    loaded = load_manifest(path)
+    assert loaded.campaign == {
+        "id": tmp_path.name,
+        "name": "Unpublished campaign",
+        "date": "2024-08",
+    }
 
 
 def test_built_manifest_fetches_default_logs_from_zenodo(tmp_path, monkeypatch):

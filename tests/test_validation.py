@@ -286,6 +286,16 @@ def test_a_transition_lag_must_name_a_described_phase(tmp_path):
     ]
 
 
+def test_custom_sampling_phase_roles_are_validated_and_available_to_qc(tmp_path):
+    path = write_manifest(
+        tmp_path,
+        phases={"analysis": [5], "span": [1, 15]},
+        qc={"phase_transition_lag": {"span": 90}},
+    )
+
+    assert validate_manifest_document(yaml.safe_load(path.read_text()), path) == []
+
+
 def test_a_transition_lag_must_be_a_non_negative_number(tmp_path):
     path = write_manifest(
         tmp_path,

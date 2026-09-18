@@ -12,10 +12,13 @@ from datetime import date as calendar_date
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from .errors import YachtCO2Error
-from .manifest import CampaignManifest, default_template
-from .pipeline import Pipeline, RunResult
-from .project import read_yaml
+from .manifest import MANIFEST_NAME, build_manifest
+from .pipeline import RunResult
+from .workflow import run_campaign
+from .zenodo import CONFIG_NAME as ZENODO_CONFIG_NAME
 
 DEFAULT_MAX_FILES = 100
 DEFAULT_MAX_TOTAL_BYTES = 1024 * 1024 * 1024
@@ -88,6 +91,42 @@ def _safe_log_name(name: str) -> str:
     return name
 
 
+def ensure_campaign_config(folder: str | Path, name: str, date: str) -> Path:
+    """Write the minimal campaign ``zenodo.yaml`` when a folder has none.
+
+    The file is useful campaign metadata even when Zenodo archiving is skipped.
+    Existing configuration is preserved so reserved DOIs and operator edits
+    can never be lost by importing or processing local logs.
+    """
+    normalise_campaign_id(name, date)
+    folder = Path(folder).resolve()
+    destination = folder / ZENODO_CONFIG_NAME
+    if destination.exists():
+        return destination
+    folder.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".zenodo-", suffix=".tmp", dir=folder)
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    temporary.write_text(
+        yaml.safe_dump(
+            {"campaign": name.strip(), "campaign_date": date.strip()},
+            sort_keys=False,
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    try:
+        # Linking is an atomic, exclusive claim: another writer's config is
+        # preserved if it wins the race between the exists check and here.
+        try:
+            os.link(temporary, destination)
+        except FileExistsError:
+            pass
+    finally:
+        temporary.unlink(missing_ok=True)
+    return destination
+
+
 def import_raw_logs(
     data_root: str | Path,
     name: str,
@@ -128,6 +167,7 @@ def import_raw_logs(
     try:
         for file, filename in zip(selected, names, strict=True):
             (stage / filename).write_bytes(file.content)
+        ensure_campaign_config(stage, name, date)
         # mkdir is an exclusive ownership claim. Unlike replacing the staged
         # directory, it cannot overwrite an empty campaign created by another
         # request between our initial exists check and this point.
@@ -136,7 +176,7 @@ def import_raw_logs(
         except FileExistsError as exc:
             raise YachtCO2Error(f"Campaign already exists: {campaign_id}") from exc
         claimed = True
-        for filename in names:
+        for filename in [*names, ZENODO_CONFIG_NAME]:
             target = destination / filename
             (stage / filename).replace(target)
             moved.append(target)
@@ -158,32 +198,15 @@ def import_raw_logs(
 
 
 def process_raw_logs_directly(folder: str | Path, name: str, date: str) -> RunResult:
-    """Process local logs using the current defaults, without archiving them.
+    """Build a local-input manifest and run it, without requiring an archive.
 
-    This intentionally does not write a manifest or alter raw files. It is a
-    direct, local result from the same defaults used for a normal manifest.
+    Kept as a compatibility entry point for older GUI callers. Local and
+    archived processing now share the normal, persisted manifest workflow.
     """
     folder = Path(folder).resolve()
-    campaign_id = normalise_campaign_id(name, date)
-    template = read_yaml(default_template())
-    inputs = dict(template.get("inputs", {}))
-    inputs.pop("repository", None)
-    inputs["logs"] = "./*.log"
-    outputs = dict(template.get("outputs", {}))
-    outputs["directory"] = "."
-    manifest = CampaignManifest(
-        path=folder / "manifest.yaml",
-        campaign={"id": campaign_id, "name": name.strip(), "date": date.strip()},
-        inputs=inputs,
-        columns=dict(template.get("columns", {})),
-        phases=dict(template.get("phases", {})),
-        calibration=dict(template.get("calibration", {})),
-        equilibrator=dict(template.get("equilibrator", {})),
-        qc=dict(template.get("qc", {})),
-        atmosphere=dict(template.get("atmosphere", {})),
-        products=list(template.get("products", [])),
-        flux=dict(template.get("flux", {})),
-        outputs=outputs,
-        raw={**template, "campaign": {"id": campaign_id, "name": name.strip(), "date": date.strip()}, "inputs": inputs, "outputs": outputs},
-    )
-    return Pipeline(manifest).run()
+    normalise_campaign_id(name, date)
+    config = ensure_campaign_config(folder, name, date)
+    manifest = folder / MANIFEST_NAME
+    if not manifest.exists():
+        manifest = build_manifest(config)
+    return run_campaign(manifest)

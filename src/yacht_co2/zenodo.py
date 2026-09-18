@@ -35,7 +35,7 @@ from .project import (
     load_environment,
     read_yaml,
 )
-from .userconfig import read_token
+from .userconfig import config_dir, read_token, shared_config_dir
 
 CONFIG_NAME = "zenodo.yaml"
 # Shared metadata lives beside the platform defaults, in one project file with
@@ -160,7 +160,17 @@ def _defaults_directories(folder: Path, config_path: Path) -> list[Path]:
     defaults use. The invocation and configuration directories rank
     below that walk, so a folder's own defaults always win.
     """
-    return [Path.cwd(), config_path.parent, *config_directories(folder)]
+    # The GUI's Project settings are stored in either the deployment's shared
+    # directory or the person's writable directory.  Include both here so a
+    # Renku campaign under /home/renku/work resolves the same defaults as the
+    # rest of the application, even though it is not inside this checkout.
+    return [
+        shared_config_dir(),
+        config_dir(),
+        Path.cwd(),
+        config_path.parent,
+        *config_directories(folder),
+    ]
 
 
 def _defaults(folder: Path, config_path: Path) -> dict[str, Any]:
@@ -424,19 +434,37 @@ def generate_zenodo_config(
     return destination
 
 
-def _selected_files(folder: Path) -> list[Path]:
-    """Select uploadable top-level regular files in stable name order."""
-    return sorted(
-        (
+def _selected_files(folder: Path, files: Sequence[str | Path] | None = None) -> list[Path]:
+    """Select uploadable regular files in stable name order.
+
+    Omitting ``files`` retains the raw-folder behaviour.  Supplying paths is
+    for publishing a campaign's products without also publishing its raw logs.
+    Zenodo records have a flat namespace, so duplicate filenames are rejected
+    before any remote work starts.
+    """
+    if files is None:
+        selected = [
             path
             for path in folder.iterdir()
             if path.is_file()
             and not path.is_symlink()
             and not path.name.startswith(".")
             and path.name != CONFIG_NAME
-        ),
-        key=lambda path: path.name,
-    )
+        ]
+    else:
+        selected = []
+        for value in files:
+            path = Path(value)
+            path = path if path.is_absolute() else folder / path
+            if not path.is_file() or path.is_symlink():
+                raise ZenodoError(f"selected upload file is not a regular file: {path}")
+            selected.append(path.resolve())
+    duplicates = {
+        path.name for path in selected if sum(item.name == path.name for item in selected) > 1
+    }
+    if duplicates:
+        raise ZenodoError(f"selected upload files have duplicate names: {', '.join(sorted(duplicates))}")
+    return sorted(selected, key=lambda path: path.name)
 
 
 def _subfolders(folder: Path) -> list[Path]:
@@ -1114,11 +1142,12 @@ def upload_raw_folder(
     record_id: str | int | None = None,
     prune: bool = False,
     dry_run: bool = False,
+    files: Sequence[str | Path] | None = None,
     token: str | None = None,
     client: ZenodoClient | None = None,
     today: date | None = None,
 ) -> dict[str, Any]:
-    """Create or resume a Zenodo draft for top-level files in ``folder``.
+    """Create or resume a Zenodo draft for a folder's files or explicit products.
 
     State is written to ``.zenodo-upload.json`` after every durable remote step.
     With ``publish=True`` a first draft is submitted to its configured community
@@ -1162,9 +1191,9 @@ def upload_raw_folder(
     resolved = load_zenodo_config(folder_path, config_path, overrides, today=today)
     logger.info("Zenodo record {!r} (slug {})", resolved["title"], resolved["slug"])
     stamp_date = (today or date.today()).isoformat()
-    selected = _selected_files(folder_path)
+    selected = _selected_files(folder_path, files)
     skipped_folders = _warn_about_subfolders(folder_path)
-    logger.info("Checksumming {} top-level file(s) in {}", len(selected), folder_path)
+    logger.info("Checksumming {} selected file(s) for {}", len(selected), folder_path)
     local: dict[str, dict[str, Any]] = {
         path.name: {"path": path, **_checksums(path)} for path in selected
     }

@@ -15,6 +15,7 @@ from pathlib import Path
 
 from nicegui import ui
 
+from ..errors import YachtCO2Error
 from ..manifest import packaged_defaults
 from ..userconfig import (
     MANIFEST_DEFAULTS_NAME,
@@ -30,15 +31,65 @@ from ..userconfig import (
     seed_config_dir,
     write_settings,
 )
-from ..validation import validate_manifest_document, validate_project_document
+from ..validation import Finding, validate_manifest_document, validate_project_document
 from .components import DocumentEditor
 from .folders import FolderPicker
 from .opening import reveal
+from .yamlform import load_document, plain
 
 TOKEN_HELP = (
     "Create one at zenodo.org under Applications -> Personal access tokens, "
     "with the deposit:write and deposit:actions scopes."
 )
+
+
+def project_settings_findings() -> list[Finding]:
+    """Return the actionable problems in the project's editable defaults.
+
+    A missing user file is normal until somebody opens Settings, which seeds it
+    from the packaged template. Once that file exists, template placeholders
+    and validation errors should be visible from the cog as well as the editor.
+    """
+    path = config_file(PROJECT_NAME)
+    if not path.is_file():
+        return []
+    try:
+        document = plain(load_document(path))
+    except YachtCO2Error as exc:
+        return [Finding("error", PROJECT_NAME, str(exc))]
+
+    findings = validate_project_document(document, source=PROJECT_NAME)
+    return [
+        *findings,
+        *(
+            Finding("warning", where, 'is still the template placeholder "..."')
+            for where in _template_placeholders(document)
+        ),
+    ]
+
+
+def _template_placeholders(value: object, where: str = "") -> list[str]:
+    """Find the ``...`` values that a seeded project file asks its owner to fill in."""
+    if value == "...":
+        return [where]
+    if isinstance(value, dict):
+        return [
+            placeholder
+            for key, item in value.items()
+            for placeholder in _template_placeholders(item, _join_path(where, str(key)))
+        ]
+    if isinstance(value, list):
+        return [
+            placeholder
+            for index, item in enumerate(value)
+            for placeholder in _template_placeholders(item, f"{where}[{index}]")
+        ]
+    return []
+
+
+def _join_path(parent: str, child: str) -> str:
+    """Append one mapping key to a dotted validation path."""
+    return f"{parent}.{child}" if parent else child
 
 
 class GuiDefaultsPanel:
@@ -88,8 +139,13 @@ class GuiDefaultsPanel:
 class TokenPanel:
     """Keep a Zenodo token in this browser session, out of the repository."""
 
-    def __init__(self, session_tokens: dict[str, str]) -> None:
+    def __init__(
+        self,
+        session_tokens: dict[str, str],
+        on_changed: Callable[[], None] | None = None,
+    ) -> None:
         self.session_tokens = session_tokens
+        self.on_changed = on_changed
         with ui.column().classes("w-full gap-3"):
             ui.label(
                 "A pasted token is held only for this browser session. It is never written "
@@ -157,12 +213,16 @@ class TokenPanel:
         self.session_tokens[TOKEN_VARIABLES[sandbox]] = token.strip()
         self.inputs[sandbox].set_value("")
         self._refresh()
+        if self.on_changed is not None:
+            self.on_changed()
         ui.notify("Token set for this session.", type="positive")
 
     def _forget(self, sandbox: bool) -> None:
         self.session_tokens.pop(TOKEN_VARIABLES[sandbox], None)
         self.inputs[sandbox].set_value("")
         self._refresh()
+        if self.on_changed is not None:
+            self.on_changed()
         ui.notify("Session token removed.", type="info")
 
 
@@ -237,4 +297,7 @@ def settings_panels(
                 on_click=lambda: template.restore(packaged_defaults()),
             ).props("flat dense")
         with ui.tab_panel(token_tab):
-            TokenPanel(session_tokens if session_tokens is not None else {})
+            TokenPanel(
+                session_tokens if session_tokens is not None else {},
+                on_changed=on_saved,
+            )

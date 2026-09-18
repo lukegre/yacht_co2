@@ -9,6 +9,7 @@ sections this form does not know about -- ``products``, ``atmosphere``,
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from html import escape
 from pathlib import Path
@@ -49,6 +50,8 @@ class ManifestForm:
         self.on_saved = on_saved
         self.document: Any = {}
         self.controls: dict[tuple[str, ...], Any] = {}
+        self.phase_controls: dict[str, Any] = {}
+        self.lag_controls: dict[str, Any] = {}
 
         with ui.column().classes("w-full gap-3"):
             with ui.row().classes("w-full items-center justify-between"):
@@ -86,9 +89,61 @@ class ManifestForm:
             with ui.expansion(heading, value=heading in {"Campaign", "Inputs"}).classes(
                 "w-full border rounded"
             ):
-                with ui.grid(columns=2).classes("w-full gap-3 p-2"):
+                with ui.grid(columns=2).classes("w-full gap-3 p-2 items-start"):
                     for field in fields:
                         self.controls[field.path] = self._control(field)
+                if heading == "Quality control":
+                    self._build_transition_lags()
+            if heading == "Inputs":
+                self._build_sampling_phases()
+
+    def _build_sampling_phases(self) -> None:
+        with ui.expansion("Sampling phases").classes("w-full border rounded"):
+            ui.label(
+                "Name each instrument phase and give its numeric codes. Added phases are "
+                "available when configuring settling times below."
+            ).classes("text-sm text-gray-600 px-2 pt-2")
+            self.phase_list = ui.column().classes("w-full gap-2 p-2")
+            with ui.row().classes("w-full gap-2 items-start p-2"):
+                self.new_phase_name = (
+                    ui.input("New phase name", placeholder="span")
+                    .props("dense outlined")
+                    .classes("grow")
+                    .mark("new-phase-name")
+                )
+                self.new_phase_codes = (
+                    ui.input("Phase codes", placeholder="1, 15")
+                    .props("dense outlined")
+                    .classes("grow")
+                    .mark("new-phase-codes")
+                )
+                ui.button("Add phase", icon="add", on_click=self._add_phase).props(
+                    "unelevated dense"
+                ).mark("add-phase")
+
+    def _build_transition_lags(self) -> None:
+        with ui.column().classes("w-full gap-2 px-2 pb-2"):
+            ui.label("Settling after phase switches").classes("text-sm font-medium")
+            ui.label(
+                "Flag this many seconds after the instrument enters each selected phase."
+            ).classes("text-xs text-gray-500")
+            self.lag_list = ui.column().classes("w-full gap-2")
+            with ui.row().classes("w-full gap-2 items-start"):
+                self.new_lag_role = (
+                    ui.select([], label="Sampling phase")
+                    .props("dense outlined")
+                    .classes("grow")
+                    .mark("phase-lag-role")
+                )
+                self.new_lag_seconds = (
+                    ui.number("Seconds", min=0)
+                    .props("dense outlined")
+                    .classes("grow")
+                    .mark("phase-lag-seconds")
+                )
+                ui.button("Add settling time", icon="add", on_click=self._add_lag).props(
+                    "flat dense"
+                ).mark("add-phase-lag")
 
     def _control(self, field: Field) -> Any:
         """Build the one control that suits this field's kind.
@@ -98,7 +153,11 @@ class ManifestForm:
         """
         mark = f"field-{field.where}"
         if field.kind == "switch":
-            return ui.switch(field.label).tooltip(field.help or field.where).mark(mark)
+            with ui.column().classes("w-full gap-0 self-start"):
+                switch_control = ui.switch(field.label).mark(mark)
+                if field.help:
+                    ui.label(field.help).classes("text-xs text-gray-500 pl-10")
+            return switch_control
         if field.kind == "select":
             return (
                 ui.select(list(field.options), label=field.label)
@@ -114,15 +173,16 @@ class ManifestForm:
                 .mark(mark)
             )
         if field.kind == "number":
-            return (
-                ui.number(label=field.label)
-                .props(f"dense outlined {_hint(field)}")
-                .classes("w-full")
-                .mark(mark)
-            )
+            with ui.column().classes("w-full gap-1 self-start"):
+                ui.label(field.label).classes("text-sm text-gray-700 min-h-5")
+                number_control = ui.number().props("dense outlined").classes("w-full").mark(mark)
+                ui.label(field.help or f"manifest key {field.where}").classes(
+                    "text-xs text-gray-500 min-h-5"
+                )
+            return number_control
         if field.kind == "range":
-            with ui.column().classes("w-full gap-0"):
-                ui.label(field.label).classes("text-xs text-gray-600")
+            with ui.column().classes("w-full gap-1 self-start"):
+                ui.label(field.label).classes("text-sm text-gray-700 min-h-5")
                 with ui.row().classes("w-full gap-2 no-wrap"):
                     low = (
                         ui.number(label="lowest")
@@ -136,8 +196,9 @@ class ManifestForm:
                         .classes("grow")
                         .mark(f"{mark}-high")
                     )
-                if field.help:
-                    ui.label(field.help).classes("text-xs text-gray-500")
+                ui.label(field.help or f"manifest key {field.where}").classes(
+                    "text-xs text-gray-500 min-h-5"
+                )
             return (low, high)
         # Both plain text and a list of phase codes are typed into a text box;
         # the codes are parsed on the way back into the document.
@@ -153,6 +214,8 @@ class ManifestForm:
         self.document = load_document(self.path) if self.path.is_file() else {}
         for field in (field for _, fields in MANIFEST_GROUPS for field in fields):
             self._show(field, read_path(self.document, field.path))
+        self._refresh_phase_controls()
+        self._refresh_lag_controls()
         self.editor.set_value(dump_text(self.document))
         self._check()
 
@@ -209,6 +272,15 @@ class ManifestForm:
             else:
                 text = (control.value or "").strip()
                 write_path(self.document, field.path, text or MISSING)
+        for role, control in self.phase_controls.items():
+            codes = parse_integers(control.value or "")
+            write_path(self.document, ("phases", role), codes if codes else MISSING)
+        for role, control in self.lag_controls.items():
+            write_path(
+                self.document,
+                ("qc", "phase_transition_lag", role),
+                MISSING if control.value is None else control.value,
+            )
 
     def _absorb_text(self, _event: Any) -> None:
         """Take the text view as the document when it is edited directly."""
@@ -221,6 +293,113 @@ class ManifestForm:
             return
         for field in (field for _, fields in MANIFEST_GROUPS for field in fields):
             self._show(field, read_path(self.document, field.path))
+        self._refresh_phase_controls()
+        self._refresh_lag_controls()
+        self._check()
+
+    def _refresh_phase_controls(self) -> None:
+        self.phase_controls = {}
+        self.phase_list.clear()
+        phases = read_path(self.document, ("phases",), {})
+        if not isinstance(phases, dict):
+            phases = {}
+        with self.phase_list:
+            for role, codes in phases.items():
+                role = str(role)
+                with ui.row().classes("w-full gap-2 items-start no-wrap"):
+                    ui.label(role.replace("_", " ").title()).classes(
+                        "w-36 pt-2 text-sm font-medium"
+                    )
+                    control = (
+                        ui.input("Phase codes", value=format_integers(codes))
+                        .props("dense outlined")
+                        .classes("grow")
+                        .mark(f"field-phases.{role}")
+                    )
+                    self.phase_controls[role] = control
+                    ui.button(
+                        icon="delete_outline",
+                        on_click=lambda role=role: self._remove_phase(role),
+                    ).props(f"flat round dense aria-label='Remove {role} phase'")
+        roles = list(self.phase_controls)
+        self.new_lag_role.set_options(roles)
+        if self.new_lag_role.value not in roles:
+            self.new_lag_role.set_value(None)
+
+    def _refresh_lag_controls(self) -> None:
+        self.lag_controls = {}
+        self.lag_list.clear()
+        lags = read_path(self.document, ("qc", "phase_transition_lag"), {})
+        if not isinstance(lags, dict):
+            lags = {}
+        with self.lag_list:
+            for role, seconds in lags.items():
+                role = str(role)
+                with ui.row().classes("w-full gap-2 items-start no-wrap"):
+                    ui.label(role.replace("_", " ").title()).classes(
+                        "w-36 pt-2 text-sm font-medium"
+                    )
+                    control = (
+                        ui.number("Seconds", value=seconds, min=0)
+                        .props("dense outlined")
+                        .classes("grow")
+                        .mark(f"field-qc.phase_transition_lag.{role}")
+                    )
+                    self.lag_controls[role] = control
+                    ui.button(
+                        icon="delete_outline",
+                        on_click=lambda role=role: self._remove_lag(role),
+                    ).props(f"flat round dense aria-label='Remove {role} settling time'")
+
+    def _add_phase(self) -> None:
+        role = str(self.new_phase_name.value or "").strip().lower().replace(" ", "_")
+        if not re.fullmatch(r"[a-z][a-z0-9_-]*", role):
+            ui.notify("Use a short phase name made from letters, numbers, _ or -.", type="negative")
+            return
+        try:
+            codes = parse_integers(str(self.new_phase_codes.value or ""))
+        except YachtCO2Error as exc:
+            ui.notify(str(exc), type="negative")
+            return
+        if not codes:
+            ui.notify("Give the phase at least one numeric code.", type="negative")
+            return
+        phases = read_path(self.document, ("phases",), {})
+        if isinstance(phases, dict) and role in phases:
+            ui.notify(f"Sampling phase {role!r} already exists.", type="warning")
+            return
+        write_path(self.document, ("phases", role), codes)
+        self.new_phase_name.set_value("")
+        self.new_phase_codes.set_value("")
+        self._refresh_phase_controls()
+        self._refresh_lag_controls()
+        self._sync_editor()
+
+    def _remove_phase(self, role: str) -> None:
+        write_path(self.document, ("phases", role), MISSING)
+        write_path(self.document, ("qc", "phase_transition_lag", role), MISSING)
+        self._refresh_phase_controls()
+        self._refresh_lag_controls()
+        self._sync_editor()
+
+    def _add_lag(self) -> None:
+        role = str(self.new_lag_role.value or "")
+        seconds = self.new_lag_seconds.value
+        if not role or seconds is None:
+            ui.notify("Choose a sampling phase and give its settling time.", type="negative")
+            return
+        write_path(self.document, ("qc", "phase_transition_lag", role), seconds)
+        self.new_lag_seconds.set_value(None)
+        self._refresh_lag_controls()
+        self._sync_editor()
+
+    def _remove_lag(self, role: str) -> None:
+        write_path(self.document, ("qc", "phase_transition_lag", role), MISSING)
+        self._refresh_lag_controls()
+        self._sync_editor()
+
+    def _sync_editor(self) -> None:
+        self.editor.set_value(dump_text(self.document))
         self._check()
 
     def _report_broken(self) -> None:

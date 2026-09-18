@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from nicegui.testing import User
 
+from yacht_co2.gui.settings import project_settings_findings
 from yacht_co2.userconfig import (
     MANIFEST_DEFAULTS_NAME,
     PROJECT_NAME,
@@ -45,6 +46,26 @@ async def test_the_seeded_project_file_says_what_is_still_missing(user: User):
     # cannot archive a record under a placeholder name.
     await user.should_see("zenodo.creators")
     await user.should_see("creators must contain at least one entry")
+
+
+async def test_settings_cog_warns_about_missing_project_information(user: User):
+    config_file(PROJECT_NAME).parent.mkdir(parents=True, exist_ok=True)
+    config_file(PROJECT_NAME).write_text(
+        "platform:\n  vessel_name: ...\nzenodo:\n  creators: []\n  community: ...\n",
+        encoding="utf-8",
+    )
+
+    await user.open("/")
+    await user.should_see(marker="project-settings-warning")
+    await user.should_see("project.yaml needs attention")
+    await user.should_see('platform.vessel_name: is still the template placeholder "..."')
+
+    problems = project_settings_findings()
+    assert [(problem.where, problem.message) for problem in problems] == [
+        ("zenodo.creators", "creators must contain at least one entry"),
+        ("platform.vessel_name", 'is still the template placeholder "..."'),
+        ("zenodo.community", 'is still the template placeholder "..."'),
+    ]
 
 
 async def test_a_missing_token_is_reported_without_ever_showing_one(user: User, monkeypatch):

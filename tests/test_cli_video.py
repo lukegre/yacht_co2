@@ -265,6 +265,27 @@ def test_cli_run_uploads_and_builds_local_artifacts(tmp_path, monkeypatch):
     assert "window.YACHT_REPORT=" in site
 
 
+def test_cli_run_can_skip_archive_and_process_persisted_local_inputs(tmp_path, monkeypatch):
+    (tmp_path / "one.log").write_text(LOG)
+    manifest = built_manifest(
+        tmp_path, zenodo="campaign: Local voyage\ncampaign_date: 2023-06\n"
+    )
+
+    def unexpected_upload(*args, **kwargs):
+        raise AssertionError("a local-input manifest must not contact Zenodo")
+
+    monkeypatch.setattr("yacht_co2.workflow.upload_raw_folder", unexpected_upload)
+
+    result = CliRunner().invoke(app, ["run", str(manifest)])
+
+    assert result.exit_code == 0, result.output
+    written = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    assert written["inputs"]["logs"] == "./*.log"
+    assert "repository" not in written["inputs"]
+    assert (tmp_path / "yacht_co2-local_voyage-2023_06-track.nc").is_file()
+    assert (tmp_path / "yacht_co2-local_voyage-2023_06-site.html").is_file()
+
+
 def test_cli_run_processes_the_manifests_folder_not_the_working_directory(tmp_path, monkeypatch):
     """The manifest selects the folder, so run works from anywhere."""
     folder = tmp_path / "221205DATA0"

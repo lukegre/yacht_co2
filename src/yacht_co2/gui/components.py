@@ -10,6 +10,7 @@ from nicegui import ui
 
 from ..errors import YachtCO2Error
 from ..validation import Finding, errors
+from .artifacts import download_url, preview_url
 from .opening import open_file, reveal
 from .yamlform import dump_text, load_document, parse_document, plain, save_document
 
@@ -47,9 +48,25 @@ def show_json(path: Path) -> None:
         ui.label(path.name).classes("font-medium")
         ui.code(text, language="json").classes("w-full max-h-[60vh] overflow-auto text-xs")
         with ui.row().classes("w-full justify-end gap-2"):
-            ui.button("Show in file manager", on_click=lambda: reveal(path)).props("flat")
+            ui.button("Download report", icon="download").props(
+                f"flat dense type=a href={download_url(path.parent.name, 'report')}"
+            )
             ui.button("Close", on_click=dialog.close).props("flat")
     dialog.open()
+
+
+def show_browser_artifact(campaign: str, artifact_key: str) -> None:
+    """Present an artifact through the browser-safe HTTP actions."""
+    if artifact_key == "site":
+        with ui.dialog() as dialog, ui.card().classes("w-full max-w-7xl"):
+            (
+                ui.element("iframe")
+                .props(f'src="{preview_url(campaign)}"')
+                .classes("w-full h-[70vh] border-0")
+                .mark("site-preview-frame")
+            )
+            ui.button("Close", on_click=dialog.close).props("flat")
+        dialog.open()
 
 
 def findings_panel(findings: list[Finding], *, clean: str = "No problems found.") -> None:

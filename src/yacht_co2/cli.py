@@ -23,10 +23,10 @@ APP_HELP = """Process and explore underway yacht CO2 observations.
 A campaign is one command, [bold]yacht-co2 run manifest.yaml[/bold], which:
 
 \b
-  1. archives the campaign folder's raw logs on Zenodo (skipped when the
-     checksums show this folder was already uploaded);
-  2. reads the logs back from the archived record, so what is published is
-     provably what was processed;
+  1. archives the campaign folder's raw logs on Zenodo when the manifest names
+     a repository (skipped for a local-input manifest or an unchanged upload);
+  2. reads archived logs back from the record, or reads local logs when archive
+     was skipped;
   3. ingests and processes them into a quality-controlled track;
   4. exports the dataset beside the manifest;
   5. writes the JSON run report;
@@ -95,15 +95,14 @@ def run(
         help=f"Campaign {MANIFEST_NAME}; its folder is the one processed.",
     ),
 ) -> None:
-    """Archive a campaign on Zenodo and build every product from the record.
+    """Optionally archive a campaign, then build every product from its logs.
 
     \b
     The manifest's folder is the campaign, and the run:
-      1. uploads its raw logs to Zenodo, unless the checksums recorded by an
-         earlier run show that this folder is already archived;
-      2. reads the logs back from the archived record, so what is published is
-         provably what was processed (the local logs stand in while a
-         just-submitted record is still awaiting review);
+      1. uploads its raw logs to Zenodo when inputs.repository is set, unless
+         the folder is unchanged since an earlier upload;
+      2. reads archived logs back from the record, or local logs when archive
+         was skipped or a submitted record is still awaiting review;
       3. ingests and processes them into a quality-controlled track;
       4. exports the dataset beside the manifest;
       5. writes the JSON run report;

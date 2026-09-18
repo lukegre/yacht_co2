@@ -162,6 +162,27 @@ def test_a_new_manifest_starts_from_the_users_own_template(tmp_path):
     assert built["qc"]["minimum_water_flow"] == 0.75
 
 
+def test_a_manifest_without_an_archive_reads_the_campaigns_local_logs(tmp_path):
+    folder = tmp_path / "fastnet_race-2023-07-24"
+    folder.mkdir()
+    (folder / "one.log").write_text("raw\n", encoding="utf-8")
+    (folder / "zenodo.yaml").write_text(
+        "campaign: Fastnet Race\ncampaign_date: 2023-07-24\n",
+        encoding="utf-8",
+    )
+
+    path = build_manifest(folder / "zenodo.yaml")
+
+    built = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert built["campaign"] == {
+        "id": "fastnet_race-2023-07-24",
+        "name": "Fastnet Race",
+        "date": "2023-07-24",
+    }
+    assert built["inputs"]["logs"] == "./*.log"
+    assert "repository" not in built["inputs"]
+
+
 def test_a_token_is_stored_privately_and_read_back(monkeypatch):
     monkeypatch.delenv("ZENODO_ACCESS_TOKEN", raising=False)
     monkeypatch.delenv("ZENODO_SANDBOX_ACCESS_TOKEN", raising=False)

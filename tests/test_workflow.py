@@ -74,6 +74,21 @@ def test_a_broken_manifest_is_reported_rather_than_raised(tmp_path):
     assert not status.is_processed
 
 
+def test_a_local_manifest_durably_marks_the_archive_as_skipped(tmp_path):
+    folder = _campaign(tmp_path / "local", manifest=True)
+    document = yaml.safe_load((folder / "manifest.yaml").read_text(encoding="utf-8"))
+    document["inputs"].pop("repository")
+    (folder / "manifest.yaml").write_text(
+        yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
+    )
+
+    status = campaign_status(folder)
+
+    assert status.archive_skipped
+    assert status.archive_complete
+    assert not status.is_uploaded
+
+
 def test_only_folders_holding_a_campaign_are_listed(tmp_path):
     root = tmp_path / "data"
     _campaign(root / "2306_fastnet")
